@@ -559,11 +559,20 @@ func (m *Manager) EndTransfer(transferID uuid.UUID) {
 		"talk_duration", talkDuration,
 	)
 
-	// Terminate the WhatsApp call so the caller's phone also disconnects
-	m.terminateCallBySession(session)
+	// If the IVR loop is waiting to resume after transfer, signal it
+	// instead of tearing down the session.
+	session.mu.Lock()
+	transferDone := session.TransferDone
+	session.TransferDone = nil
+	session.mu.Unlock()
 
-	// Clean up the whole call session
-	m.cleanupSession(session.ID)
+	if transferDone != nil {
+		transferDone <- "completed"
+	} else {
+		// Terminal transfer — terminate the WhatsApp call and clean up.
+		m.terminateCallBySession(session)
+		m.cleanupSession(session.ID)
+	}
 }
 
 // waitForTransferTimeout marks the transfer as no_answer if nobody accepts in time.
@@ -611,8 +620,17 @@ func (m *Manager) waitForTransferTimeout(ctx context.Context, session *CallSessi
 
 	m.log.Info("Call transfer timed out", "transfer_id", transferID)
 
-	// Clean up the session (terminates WhatsApp call via cleanupSession)
-	m.cleanupSession(session.ID)
+	// If the IVR loop is waiting to resume, signal it instead of cleaning up.
+	session.mu.Lock()
+	transferDone := session.TransferDone
+	session.TransferDone = nil
+	session.mu.Unlock()
+
+	if transferDone != nil {
+		transferDone <- "no_answer"
+	} else {
+		m.cleanupSession(session.ID)
+	}
 }
 
 // HandleCallerHangupDuringTransfer handles the case where the caller hangs up while waiting.
@@ -657,8 +675,19 @@ func (m *Manager) HandleCallerHangupDuringTransfer(session *CallSession) {
 
 	m.log.Info("Call transfer abandoned (caller hung up)", "transfer_id", transferID)
 
-	// Now that TransferStatus is no longer Waiting, cleanupSession will proceed.
-	m.cleanupSession(session.ID)
+	// If the IVR loop is waiting to resume, signal it. The next node's audio
+	// write will fail (caller disconnected), so the loop breaks naturally.
+	session.mu.Lock()
+	transferDone := session.TransferDone
+	session.TransferDone = nil
+	session.mu.Unlock()
+
+	if transferDone != nil {
+		transferDone <- "abandoned"
+	} else {
+		// Now that TransferStatus is no longer Waiting, cleanupSession will proceed.
+		m.cleanupSession(session.ID)
+	}
 }
 
 // findSessionByTransferID looks up a session by its transfer ID.
