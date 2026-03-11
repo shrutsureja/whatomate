@@ -190,7 +190,9 @@ export const messagesService = {
   sendTemplate: (contactId: string, data: { template_name: string; template_params?: Record<string, string>; account_name?: string }) =>
     api.post('/messages/template', { contact_id: contactId, ...data }),
   sendReaction: (contactId: string, messageId: string, emoji: string) =>
-    api.post(`/contacts/${contactId}/messages/${messageId}/reaction`, { emoji })
+    api.post(`/contacts/${contactId}/messages/${messageId}/reaction`, { emoji }),
+  deleteAll: (contactId: string) =>
+    api.delete(`/contacts/${contactId}/messages`)
 }
 
 export const templatesService = {

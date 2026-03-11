@@ -87,6 +87,9 @@ const WS_TYPE_CONVERSATION_NOTE_CREATED = 'conversation_note_created'
 const WS_TYPE_CONVERSATION_NOTE_UPDATED = 'conversation_note_updated'
 const WS_TYPE_CONVERSATION_NOTE_DELETED = 'conversation_note_deleted'
 
+// Chat types
+const WS_TYPE_CHAT_CLEARED = 'chat_cleared'
+
 interface WSMessage {
   type: string
   payload: any
@@ -238,6 +241,9 @@ class WebSocketService {
           break
         case WS_TYPE_CONVERSATION_NOTE_DELETED:
           useNotesStore().onNoteDeleted(message.payload.id)
+          break
+        case WS_TYPE_CHAT_CLEARED:
+          useContactsStore().onChatCleared(message.payload.contact_id)
           break
         default:
           // Unknown message type, ignore
