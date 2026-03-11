@@ -37,6 +37,9 @@ const (
 	TypeConversationNoteUpdated = "conversation_note_updated"
 	TypeConversationNoteDeleted = "conversation_note_deleted"
 
+	// Chat types
+	TypeChatCleared = "chat_cleared"
+
 	// Call types
 	TypeCallIncoming = "call_incoming"
 	TypeCallAnswered = "call_answered"

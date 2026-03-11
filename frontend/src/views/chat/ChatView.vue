@@ -48,6 +48,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
@@ -84,7 +85,8 @@ import {
   Code,
   RotateCw,
   Filter,
-  StickyNote
+  StickyNote,
+  Trash2
 } from 'lucide-vue-next'
 import { getInitials, getAvatarGradient } from '@/lib/utils'
 import { useColorMode } from '@/composables/useColorMode'
@@ -121,6 +123,8 @@ const isResuming = ref(false)
 const isInfoPanelOpen = ref(false)
 const isNotesPanelOpen = ref(false)
 const contactSessionData = ref<any>(null)
+const isClearChatDialogOpen = ref(false)
+const isClearingChat = ref(false)
 
 // Multi-account state
 const selectedAccount = ref<string | null>(null)
@@ -899,6 +903,21 @@ async function resumeChatbot() {
   }
 }
 
+async function clearChat() {
+  if (!contactsStore.currentContact || isClearingChat.value) return
+  isClearingChat.value = true
+  try {
+    await contactsStore.deleteChatMessages(contactsStore.currentContact.id)
+    isClearChatDialogOpen.value = false
+    toast.success(t('chat.chatCleared'))
+  } catch (error: any) {
+    const message = error.response?.data?.message || t('chat.clearChatFailed')
+    toast.error(message)
+  } finally {
+    isClearingChat.value = false
+  }
+}
+
 function scrollToBottom(instant = false) {
   nextTick(() => {
     if (messagesEndRef.value) {
@@ -1594,6 +1613,11 @@ async function sendMediaMessage() {
                   <Info class="mr-2 h-4 w-4" />
                   <span>{{ isInfoPanelOpen ? $t('chat.hideContactDetails') : $t('chat.viewContactDetails') }}</span>
                 </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem class="text-red-500 focus:text-red-500" @click="isClearChatDialogOpen = true">
+                  <Trash2 class="mr-2 h-4 w-4" />
+                  <span>{{ $t('chat.clearChat') }}</span>
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -2104,6 +2128,27 @@ async function sendMediaMessage() {
       @close="isInfoPanelOpen = false"
       @tags-updated="(tags) => contactsStore.updateContactTags(contactsStore.currentContact!.id, tags)"
     />
+
+    <!-- Clear Chat Confirmation Dialog -->
+    <Dialog v-model:open="isClearChatDialogOpen">
+      <DialogContent class="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{{ $t('chat.clearChat') }}</DialogTitle>
+          <DialogDescription>
+            {{ $t('chat.clearChatConfirm') }}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter class="gap-2">
+          <Button variant="outline" @click="isClearChatDialogOpen = false" :disabled="isClearingChat">
+            {{ $t('common.cancel') }}
+          </Button>
+          <Button variant="destructive" @click="clearChat" :disabled="isClearingChat">
+            <Loader2 v-if="isClearingChat" class="mr-2 h-4 w-4 animate-spin" />
+            {{ $t('chat.clearChat') }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <!-- Template Params Dialog -->
     <Dialog v-model:open="templateDialogOpen">

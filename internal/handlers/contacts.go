@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/shridarpatil/whatomate/internal/websocket"
 	"github.com/shridarpatil/whatomate/pkg/whatsapp"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -1479,6 +1480,58 @@ func (a *App) DeleteContact(r *fastglue.Request) error {
 
 	return r.SendEnvelope(map[string]any{
 		"message": "Contact deleted successfully",
+	})
+}
+
+// DeleteContactMessages deletes all chat messages for a contact while preserving contact info
+func (a *App) DeleteContactMessages(r *fastglue.Request) error {
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
+
+	// Check permission
+	if !a.HasPermission(userID, models.ResourceContacts, models.ActionDelete, orgID) {
+		return r.SendErrorEnvelope(fasthttp.StatusForbidden, "You do not have permission to delete chat messages", nil, "")
+	}
+
+	contactID, err := parsePathUUID(r, "id", "contact")
+	if err != nil {
+		return nil
+	}
+
+	// Verify contact belongs to org
+	contact, err := findByIDAndOrg[models.Contact](a.DB, r, contactID, orgID, "Contact")
+	if err != nil {
+		return nil
+	}
+
+	// Permanently delete all messages for this contact
+	if err := a.DB.Unscoped().Where("contact_id = ? AND organization_id = ?", contactID, orgID).Delete(&models.Message{}).Error; err != nil {
+		a.Log.Error("Failed to delete contact messages", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to delete chat messages", nil, "")
+	}
+
+	// Reset the contact's last message fields
+	if err := a.DB.Model(contact).Updates(map[string]any{
+		"last_message_at":      nil,
+		"last_message_preview": "",
+	}).Error; err != nil {
+		a.Log.Error("Failed to reset contact last message fields", "error", err)
+	}
+
+	// Broadcast chat cleared event via WebSocket
+	if a.WSHub != nil {
+		a.WSHub.BroadcastToOrg(orgID, websocket.WSMessage{
+			Type: websocket.TypeChatCleared,
+			Payload: map[string]any{
+				"contact_id": contactID,
+			},
+		})
+	}
+
+	return r.SendEnvelope(map[string]any{
+		"message": "Chat messages deleted successfully",
 	})
 }
 

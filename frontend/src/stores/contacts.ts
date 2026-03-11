@@ -334,6 +334,37 @@ export const useContactsStore = defineStore('contacts', () => {
     }
   }
 
+  async function deleteChatMessages(contactId: string) {
+    await messagesService.deleteAll(contactId)
+    // Clear local messages if they belong to the current contact
+    if (currentContact.value?.id === contactId) {
+      messages.value = []
+      hasMoreMessages.value = false
+    }
+    // Reset last_message_at on the contact in the list
+    const contact = contacts.value.find(c => c.id === contactId)
+    if (contact) {
+      contact.last_message_at = undefined
+    }
+    if (currentContact.value?.id === contactId) {
+      currentContact.value = {
+        ...currentContact.value,
+        last_message_at: undefined
+      }
+    }
+  }
+
+  function onChatCleared(contactId: string) {
+    if (currentContact.value?.id === contactId) {
+      messages.value = []
+      hasMoreMessages.value = false
+    }
+    const contact = contacts.value.find(c => c.id === contactId)
+    if (contact) {
+      contact.last_message_at = undefined
+    }
+  }
+
   return {
     contacts,
     currentContact,
@@ -367,6 +398,8 @@ export const useContactsStore = defineStore('contacts', () => {
     setReplyingTo,
     clearReplyingTo,
     updateMessageReactions,
-    updateContactTags
+    updateContactTags,
+    deleteChatMessages,
+    onChatCleared
   }
 })
