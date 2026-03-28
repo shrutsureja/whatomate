@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, markRaw } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { VueFlow, useVueFlow, MarkerType, type NodeMouseEvent, type Edge, type EdgeMouseEvent, type Connection } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
@@ -18,6 +19,8 @@ import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { ArrowLeft, Save, Volume2, Grid3X3, Hash, Globe, Users, ExternalLink, Clock, PhoneOff } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
+import ConfirmDialog from '@/components/shared/ConfirmDialog.vue'
+import ErrorState from '@/components/shared/ErrorState.vue'
 import IVRNodeProperties from '@/components/calling/IVRNodeProperties.vue'
 import GreetingNode from '@/components/calling/nodes/GreetingNode.vue'
 import MenuNode from '@/components/calling/nodes/MenuNode.vue'
@@ -28,6 +31,7 @@ import GotoFlowNode from '@/components/calling/nodes/GotoFlowNode.vue'
 import TimingNode from '@/components/calling/nodes/TimingNode.vue'
 import HangupNode from '@/components/calling/nodes/HangupNode.vue'
 
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const callingStore = useCallingStore()
@@ -40,6 +44,10 @@ const isCallStart = ref(false)
 const isOutgoingEnd = ref(false)
 const saving = ref(false)
 const loading = ref(true)
+const loadError = ref(false)
+
+// Node deletion confirmation
+const showDeleteNodeConfirm = ref(false)
 
 // Vue Flow custom node types — cast to any to avoid strict NodeComponent type checks
 const nodeTypes: any = {
@@ -205,8 +213,13 @@ function onUpdateNode(updatedIVRNode: IVRNode) {
   }
 }
 
-// Delete selected node
-function deleteSelectedNode() {
+// Delete selected node — show confirmation first
+function requestDeleteSelectedNode() {
+  if (!selectedNode.value) return
+  showDeleteNodeConfirm.value = true
+}
+
+function confirmDeleteSelectedNode() {
   const node = selectedNode.value
   if (!node) return
   const nodeId = node.id
@@ -219,6 +232,7 @@ function deleteSelectedNode() {
 
   removeNodes([nodeId])
   selectedNodeId.value = null
+  showDeleteNodeConfirm.value = false
 
   // If the deleted node was the entry, pick another
   if (entryNodeId.value === nodeId && nodes.value.length > 0) {
@@ -292,11 +306,11 @@ function loadFlowData(data: IVRFlowData) {
 // Save flow
 async function saveFlow() {
   if (!flowName.value.trim()) {
-    toast.error('Flow name is required')
+    toast.error(t('calling.nameRequired'))
     return
   }
   if (nodes.value.length === 0) {
-    toast.error('Add at least one node')
+    toast.error(t('calling.noIVRFlows'))
     return
   }
 
@@ -323,9 +337,9 @@ async function saveFlow() {
       }
     }
 
-    toast.success('Flow saved')
+    toast.success(t('calling.flowUpdated'))
   } catch (e: any) {
-    const msg = e?.response?.data?.message || 'Save failed'
+    const msg = e?.response?.data?.message || t('calling.flowSaveFailed')
     toast.error(msg)
   } finally {
     saving.value = false
@@ -345,9 +359,10 @@ const selectedIVRNode = computed<IVRNode | null>(() => {
   }
 })
 
-// Load flow on mount
-onMounted(async () => {
+// Load flow data from server
+async function loadFlow() {
   loading.value = true
+  loadError.value = false
   try {
     await Promise.all([callingStore.fetchIVRFlows(), teamsStore.fetchTeams()])
     const res = await ivrFlowsService.get(flowId.value)
@@ -361,10 +376,15 @@ onMounted(async () => {
       loadFlowData(flow.menu)
     }
   } catch {
-    toast.error('Failed to load flow')
+    loadError.value = true
   } finally {
     loading.value = false
   }
+}
+
+// Load flow on mount
+onMounted(() => {
+  loadFlow()
 })
 </script>
 
@@ -372,7 +392,7 @@ onMounted(async () => {
   <div class="h-screen flex flex-col">
     <!-- Toolbar -->
     <div class="flex items-center gap-3 px-4 py-2 border-b bg-background shrink-0">
-      <Button variant="ghost" size="icon" class="h-8 w-8" @click="router.push({ name: 'ivr-flows' })">
+      <Button variant="ghost" size="icon" class="h-8 w-8" :aria-label="t('calling.backToFlows')" @click="router.push({ name: 'ivr-flows' })">
         <ArrowLeft class="h-4 w-4" />
       </Button>
       <Input v-model="flowName" placeholder="Flow Name" class="h-8 text-sm max-w-[250px]" />
@@ -391,7 +411,7 @@ onMounted(async () => {
       <div class="flex-1" />
       <Button :disabled="saving" size="sm" @click="saveFlow">
         <Save class="h-4 w-4 mr-1" />
-        {{ saving ? 'Saving...' : 'Save' }}
+        {{ saving ? t('calling.flowSaving') : t('calling.flowSave') }}
       </Button>
     </div>
 
@@ -418,6 +438,23 @@ onMounted(async () => {
         <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
           <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
         </div>
+        <ErrorState
+          v-else-if="loadError"
+          :title="t('calling.flowLoadFailed')"
+          :description="t('calling.flowLoadFailedDesc')"
+          class="absolute inset-0 z-10 bg-background"
+        >
+          <template #action>
+            <div class="flex gap-2">
+              <Button variant="outline" size="sm" @click="router.push({ name: 'ivr-flows' })">
+                {{ t('calling.goBack') }}
+              </Button>
+              <Button size="sm" @click="loadFlow">
+                {{ t('common.retry') }}
+              </Button>
+            </div>
+          </template>
+        </ErrorState>
         <VueFlow
           :node-types="nodeTypes"
           :default-viewport="{ x: 0, y: 0, zoom: 1 }"
@@ -446,10 +483,20 @@ onMounted(async () => {
           :node="selectedIVRNode"
           :current-flow-id="flowId"
           @update:node="onUpdateNode"
-          @delete="deleteSelectedNode"
+          @delete="requestDeleteSelectedNode"
         />
       </div>
     </div>
+
+    <!-- Node Delete Confirmation -->
+    <ConfirmDialog
+      v-model:open="showDeleteNodeConfirm"
+      :title="t('calling.deleteNodeConfirmTitle')"
+      :description="t('calling.deleteNodeConfirmDesc')"
+      :confirm-label="t('common.delete')"
+      variant="destructive"
+      @confirm="confirmDeleteSelectedNode"
+    />
   </div>
 </template>
 

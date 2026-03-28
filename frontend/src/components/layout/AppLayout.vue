@@ -17,6 +17,7 @@ import { authService } from '@/services/api'
 import OrganizationSwitcher from './OrganizationSwitcher.vue'
 import UserMenu from './UserMenu.vue'
 import ActiveCallPanel from '@/components/calling/ActiveCallPanel.vue'
+import { ScrollToTop } from '@/components/shared'
 import { navigationItems } from './navigation'
 
 useI18n() // Enable $t() in template
@@ -172,12 +173,13 @@ const handleLogout = async () => {
             <RouterLink
               :to="item.path"
               :class="[
-                'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-all duration-200',
+                'nav-active-indicator btn-press flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-all duration-200',
                 item.active
                   ? 'bg-white/[0.08] text-white light:bg-gray-100 light:text-gray-900'
-                  : 'text-white/50 hover:text-white hover:bg-white/[0.04] light:text-gray-500 light:hover:text-gray-900 light:hover:bg-gray-50',
+                  : 'text-white/50 hover:text-white hover:bg-white/[0.06] light:text-gray-500 light:hover:text-gray-900 light:hover:bg-gray-50',
                 isCollapsed && 'md:justify-center md:px-2'
               ]"
+              :data-active="item.active"
               role="menuitem"
               :aria-current="item.active ? 'page' : undefined"
               @click="isMobileMenuOpen = false"
@@ -216,8 +218,13 @@ const handleLogout = async () => {
 
     <!-- Main content -->
     <main id="main-content" class="flex-1 overflow-hidden pt-12 md:pt-0 bg-[#0a0a0b] light:bg-gray-50" role="main">
-      <RouterView />
+      <RouterView v-slot="{ Component, route: viewRoute }">
+        <Transition name="page" mode="out-in">
+          <component :is="Component" :key="viewRoute.path" />
+        </Transition>
+      </RouterView>
       <ActiveCallPanel />
+      <ScrollToTop />
     </main>
   </div>
 </template>

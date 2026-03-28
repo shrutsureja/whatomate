@@ -13,16 +13,16 @@ import { Button } from '@/components/ui/button'
 const open = defineModel<boolean>('open', { default: false })
 
 const props = withDefaults(defineProps<{
-  title?: string
-  itemName?: string
+  title: string
   description?: string
   confirmLabel?: string
   cancelLabel?: string
+  variant?: 'default' | 'destructive'
   isSubmitting?: boolean
 }>(), {
-  title: 'Delete Item',
-  confirmLabel: 'Delete',
+  confirmLabel: 'Confirm',
   cancelLabel: 'Cancel',
+  variant: 'default',
   isSubmitting: false,
 })
 
@@ -48,20 +48,16 @@ function handleCancel() {
         <AlertDialogTitle>{{ title }}</AlertDialogTitle>
         <AlertDialogDescription>
           <slot name="description">
-            <template v-if="description">{{ description }}</template>
-            <template v-else-if="itemName">
-              Are you sure you want to delete "{{ itemName }}"? This action cannot be undone.
-            </template>
-            <template v-else>
-              Are you sure you want to delete this item? This action cannot be undone.
-            </template>
+            {{ description }}
           </slot>
         </AlertDialogDescription>
       </AlertDialogHeader>
       <AlertDialogFooter>
-        <AlertDialogCancel :disabled="isSubmitting" @click="handleCancel">{{ cancelLabel }}</AlertDialogCancel>
+        <AlertDialogCancel :disabled="isSubmitting" @click="handleCancel">
+          {{ cancelLabel }}
+        </AlertDialogCancel>
         <Button
-          variant="destructive"
+          :variant="variant === 'destructive' ? 'destructive' : 'default'"
           :loading="isSubmitting"
           @click="handleConfirm"
         >

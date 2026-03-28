@@ -12,7 +12,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { PageHeader, SearchInput, DataTable, CrudFormDialog, DeleteConfirmDialog, type Column } from '@/components/shared'
+import { PageHeader, SearchInput, DataTable, CrudFormDialog, DeleteConfirmDialog, ConfirmDialog, ErrorState, type Column } from '@/components/shared'
 import { useTeamsStore } from '@/stores/teams'
 import { useUsersStore, type User } from '@/stores/users'
 import { useAuthStore } from '@/stores/auth'
@@ -75,6 +75,17 @@ const selectedTeam = ref<Team | null>(null)
 const teamMembers = ref<TeamMember[]>([])
 const loadingMembers = ref(false)
 
+// Remove member confirmation
+const removeMemberDialogOpen = ref(false)
+const memberToRemove = ref<TeamMember | null>(null)
+const isRemovingMember = ref(false)
+
+// Delete team submitting state
+const isDeletingTeam = ref(false)
+
+// Fetch error state
+const fetchError = ref(false)
+
 const canWriteTeams = computed(() => authStore.hasPermission('teams', 'write'))
 const canDeleteTeams = computed(() => authStore.hasPermission('teams', 'delete'))
 const breadcrumbs = computed(() => [{ label: t('nav.settings'), href: '/settings' }, { label: t('nav.teams') }])
@@ -106,6 +117,7 @@ onMounted(() => { fetchTeams(); usersStore.fetchUsers() })
 
 async function fetchTeams() {
   isLoading.value = true
+  fetchError.value = false
   try {
     const response = await teamsStore.fetchTeams({
       search: searchQuery.value || undefined,
@@ -114,7 +126,10 @@ async function fetchTeams() {
     })
     teams.value = response.teams
     totalItems.value = response.total
-  } catch { toast.error(t('common.failedLoad', { resource: t('resources.teams') })) }
+  } catch {
+    fetchError.value = true
+    toast.error(t('common.failedLoad', { resource: t('resources.teams') }))
+  }
   finally { isLoading.value = false }
 }
 
@@ -137,8 +152,10 @@ async function saveTeam() {
 
 async function confirmDelete() {
   if (!teamToDelete.value) return
+  isDeletingTeam.value = true
   try { await teamsStore.deleteTeam(teamToDelete.value.id); toast.success(t('common.deletedSuccess', { resource: t('resources.Team') })); closeDeleteDialog(); await fetchTeams() }
   catch (e) { toast.error(getErrorMessage(e, t('common.failedDelete', { resource: t('resources.team') }))) }
+  finally { isDeletingTeam.value = false }
 }
 
 async function openMembersDialog(team: Team) {
@@ -159,13 +176,22 @@ async function addMember(user: User, role: 'manager' | 'agent' = 'agent') {
   } catch (e) { toast.error(getErrorMessage(e, t('common.failedSave', { resource: t('resources.member') }))) }
 }
 
-async function removeMember(member: TeamMember) {
-  if (!selectedTeam.value) return
+function openRemoveMemberDialog(member: TeamMember) {
+  memberToRemove.value = member
+  removeMemberDialogOpen.value = true
+}
+
+async function confirmRemoveMember() {
+  if (!selectedTeam.value || !memberToRemove.value) return
+  isRemovingMember.value = true
   try {
-    await teamsStore.removeTeamMember(selectedTeam.value.id, member.user_id)
-    teamMembers.value = teamMembers.value.filter(m => m.user_id !== member.user_id)
+    await teamsStore.removeTeamMember(selectedTeam.value.id, memberToRemove.value.user_id)
+    teamMembers.value = teamMembers.value.filter(m => m.user_id !== memberToRemove.value!.user_id)
     toast.success(t('teams.memberRemoved'))
+    removeMemberDialogOpen.value = false
+    memberToRemove.value = null
   } catch (e) { toast.error(getErrorMessage(e, t('common.failedDelete', { resource: t('resources.member') }))) }
+  finally { isRemovingMember.value = false }
 }
 
 function getStrategyLabel(strategy: string): string { return getLabelFromValue(ASSIGNMENT_STRATEGIES, strategy) }
@@ -180,7 +206,16 @@ function getStrategyIcon(strategy: string) { return { round_robin: RotateCcw, lo
       </template>
     </PageHeader>
 
-    <ScrollArea class="flex-1">
+    <ErrorState
+      v-if="fetchError && !isLoading"
+      :title="$t('teams.fetchErrorTitle')"
+      :description="$t('teams.fetchErrorDescription')"
+      :retry-label="$t('common.retry')"
+      class="flex-1"
+      @retry="fetchTeams"
+    />
+
+    <ScrollArea v-else class="flex-1">
       <div class="p-6">
         <div class="max-w-6xl mx-auto">
           <Card>
@@ -276,7 +311,7 @@ function getStrategyIcon(strategy: string) { return { round_robin: RotateCcw, lo
                 </div>
                 <div class="flex items-center gap-2">
                   <Badge variant="outline" class="text-xs">{{ member.role }}</Badge>
-                  <Button variant="ghost" size="icon" class="h-7 w-7" @click="removeMember(member)"><UserMinus class="h-4 w-4 text-destructive" /></Button>
+                  <Button variant="ghost" size="icon" class="h-7 w-7" @click="openRemoveMemberDialog(member)"><UserMinus class="h-4 w-4 text-destructive" /></Button>
                 </div>
               </div>
             </div>
@@ -302,6 +337,17 @@ function getStrategyIcon(strategy: string) { return { round_robin: RotateCcw, lo
       </DialogContent>
     </Dialog>
 
-    <DeleteConfirmDialog v-model:open="deleteDialogOpen" :title="$t('teams.deleteTeam')" :item-name="teamToDelete?.name" :description="$t('teams.deleteTeamWarning')" @confirm="confirmDelete" />
+    <DeleteConfirmDialog v-model:open="deleteDialogOpen" :title="$t('teams.deleteTeam')" :item-name="teamToDelete?.name" :description="$t('teams.deleteTeamWarning')" :is-submitting="isDeletingTeam" @confirm="confirmDelete" />
+
+    <!-- Remove Member Confirmation -->
+    <ConfirmDialog
+      v-model:open="removeMemberDialogOpen"
+      :title="$t('teams.confirmRemoveMemberTitle')"
+      :description="$t('teams.confirmRemoveMemberDescription', { name: memberToRemove?.full_name || memberToRemove?.user?.full_name || '' })"
+      :confirm-label="$t('common.remove')"
+      variant="destructive"
+      :is-submitting="isRemovingMember"
+      @confirm="confirmRemoveMember"
+    />
   </div>
 </template>

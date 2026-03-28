@@ -159,7 +159,7 @@ const templateDialogOpen = ref(false)
 const selectedTemplate = ref<any>(null)
 const templateParamNames = ref<string[]>([])
 const templateParamValues = ref<Record<string, string>>({})
-const templateButtonUrlParams = ref<{ index: number; text: string; value: string }[]>([])
+const templateButtonUrlParams = ref<{ index: number; text: string; value: string; type: string }[]>([])
 const isSendingTemplate = ref(false)
 const templateHeaderType = computed(() => selectedTemplate.value?.header_type)
 const {

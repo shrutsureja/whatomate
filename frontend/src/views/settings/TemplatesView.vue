@@ -15,7 +15,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
-import { PageHeader, SearchInput, DataTable, DeleteConfirmDialog, type Column } from '@/components/shared'
+import { PageHeader, SearchInput, DataTable, DeleteConfirmDialog, IconButton, ErrorState, type Column } from '@/components/shared'
 import { api, templatesService } from '@/services/api'
 import { useOrganizationsStore } from '@/stores/organizations'
 import { toast } from 'vue-sonner'
@@ -55,6 +55,7 @@ const organizationsStore = useOrganizationsStore()
 const templates = ref<Template[]>([])
 const accounts = ref<WhatsAppAccount[]>([])
 const isLoading = ref(true)
+const error = ref<string | null>(null)
 const isSyncing = ref(false)
 const searchQuery = ref('')
 const selectedAccount = ref<string>(localStorage.getItem('templates_selected_account') || 'all')
@@ -67,6 +68,7 @@ const isPreviewOpen = ref(false)
 const previewTemplate = ref<Template | null>(null)
 const deleteDialogOpen = ref(false)
 const templateToDelete = ref<Template | null>(null)
+const isDeleting = ref(false)
 const publishDialogOpen = ref(false)
 const templateToPublish = ref<Template | null>(null)
 
@@ -235,6 +237,7 @@ function onAccountChange(value: string | number | bigint | Record<string, any> |
 
 async function fetchTemplates() {
   isLoading.value = true
+  error.value = null
   try {
     const response = await templatesService.list({
       account: selectedAccount.value !== 'all' ? selectedAccount.value : undefined,
@@ -245,8 +248,9 @@ async function fetchTemplates() {
     const data = (response.data as any).data || response.data
     templates.value = data.templates || []
     totalItems.value = data.total ?? templates.value.length
-  } catch (error: any) {
-    console.error('Failed to fetch templates:', error)
+  } catch (err: any) {
+    console.error('Failed to fetch templates:', err)
+    error.value = t('templates.errorLoadingTemplates')
     toast.error(t('common.failedLoad', { resource: t('resources.templates') }))
     templates.value = []
   } finally {
@@ -376,14 +380,17 @@ function openDeleteDialog(template: Template) {
 async function confirmDeleteTemplate() {
   if (!templateToDelete.value) return
 
+  isDeleting.value = true
   try {
     await api.delete(`/templates/${templateToDelete.value.id}`)
     toast.success(t('common.deletedSuccess', { resource: t('resources.Template') }))
     deleteDialogOpen.value = false
     templateToDelete.value = null
     await fetchTemplates()
-  } catch (error) {
-    toast.error(getErrorMessage(error, t('common.failedDelete', { resource: t('resources.template') })))
+  } catch (err) {
+    toast.error(getErrorMessage(err, t('common.failedDelete', { resource: t('resources.template') })))
+  } finally {
+    isDeleting.value = false
   }
 }
 
@@ -615,7 +622,14 @@ function formatPreview(text: string, samples: any[]): string {
     <ScrollArea class="flex-1">
       <div class="p-6">
         <div class="max-w-6xl mx-auto">
-          <Card>
+          <ErrorState
+            v-if="error && !isLoading"
+            :title="$t('common.loadErrorTitle')"
+            :description="error"
+            :retry-label="$t('common.retry')"
+            @retry="fetchTemplates"
+          />
+          <Card v-else>
             <CardHeader>
               <div class="flex items-center justify-between flex-wrap gap-4">
                 <div>
@@ -685,32 +699,34 @@ function formatPreview(text: string, samples: any[]): string {
                 </template>
                 <template #cell-actions="{ item: template }">
                   <div class="flex items-center justify-end gap-1">
-                    <Button variant="ghost" size="icon" class="h-8 w-8" @click="openPreview(template)">
-                      <Eye class="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
+                    <IconButton
+                      :icon="Eye"
+                      :label="$t('templates.previewTemplate')"
                       class="h-8 w-8"
-                      @click="openEditDialog(template)"
+                      @click="openPreview(template)"
+                    />
+                    <IconButton
+                      :icon="Pencil"
+                      :label="$t('templates.editTemplateLabel')"
+                      class="h-8 w-8"
                       :disabled="template.status === 'PENDING'"
-                    >
-                      <Pencil class="h-4 w-4" />
-                    </Button>
-                    <Button
+                      @click="openEditDialog(template)"
+                    />
+                    <IconButton
                       v-if="template.status === 'DRAFT' || template.status === 'REJECTED'"
-                      variant="ghost"
-                      size="icon"
+                      :icon="publishingTemplateId === template.id ? Loader2 : Send"
+                      :label="$t('templates.publishTemplateLabel')"
                       class="h-8 w-8 text-blue-600 hover:text-blue-700"
-                      @click="openPublishDialog(template)"
                       :disabled="publishingTemplateId === template.id"
-                    >
-                      <Loader2 v-if="publishingTemplateId === template.id" class="h-4 w-4 animate-spin" />
-                      <Send v-else class="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" class="h-8 w-8 text-destructive" @click="openDeleteDialog(template)">
-                      <Trash2 class="h-4 w-4" />
-                    </Button>
+                      @click="openPublishDialog(template)"
+                    />
+                    <IconButton
+                      :icon="Trash2"
+                      :label="$t('templates.deleteTemplateLabel')"
+                      variant="ghost"
+                      class="h-8 w-8 text-destructive"
+                      @click="openDeleteDialog(template)"
+                    />
                   </div>
                 </template>
                 <template #empty-action>
@@ -1145,6 +1161,7 @@ function formatPreview(text: string, samples: any[]): string {
       v-model:open="deleteDialogOpen"
       :title="$t('templates.deleteTemplate')"
       :item-name="templateToDelete?.display_name || templateToDelete?.name"
+      :is-submitting="isDeleting"
       @confirm="confirmDeleteTemplate"
     />
 

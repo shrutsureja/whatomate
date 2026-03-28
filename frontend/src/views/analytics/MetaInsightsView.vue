@@ -30,7 +30,7 @@ import {
   type MetaTemplateDataPoint,
   type MetaCallDataPoint
 } from '@/services/api'
-import { PageHeader } from '@/components/shared'
+import { PageHeader, ErrorState } from '@/components/shared'
 import {
   Command,
   CommandEmpty,
@@ -70,6 +70,7 @@ const { t } = useI18n()
 // State
 const isLoading = ref(true)
 const isRefreshing = ref(false)
+const error = ref<string | null>(null)
 const accounts = ref<MetaAnalyticsAccount[]>([])
 const selectedAccountId = ref<string>('all')
 const accountComboboxOpen = ref(false)
@@ -229,6 +230,7 @@ const fetchAccounts = async () => {
 
 const fetchAnalytics = async () => {
   isLoading.value = true
+  error.value = null
   try {
     const { from, to } = getDateRange.value
     const params: {
@@ -259,11 +261,12 @@ const fetchAnalytics = async () => {
     const data = envelope?.data || envelope
     analyticsData.value = data.accounts || []
     isCached.value = data.cached || false
-  } catch (error: any) {
-    console.error('Failed to load analytics:', error?.response?.data, error)
-    const errData = error?.response?.data
-    const msg = errData?.data?.message || errData?.message || error?.message || 'Failed to load analytics'
+  } catch (err: any) {
+    console.error('Failed to load analytics:', err?.response?.data, err)
+    const errData = err?.response?.data
+    const msg = errData?.data?.message || errData?.message || err?.message || 'Failed to load analytics'
     toast.error(msg)
+    error.value = t('metaInsights.errorLoadingInsights')
     analyticsData.value = []
   } finally {
     isLoading.value = false
@@ -829,7 +832,7 @@ const chartOptions = {
         </Popover>
 
         <!-- Refresh Button -->
-        <Button variant="outline" size="icon" @click="refreshCache" :disabled="isRefreshing">
+        <Button variant="outline" size="icon" :aria-label="$t('metaInsights.refreshCache')" @click="refreshCache" :disabled="isRefreshing">
           <RefreshCw :class="['h-4 w-4', isRefreshing && 'animate-spin']" />
         </Button>
 
@@ -843,8 +846,17 @@ const chartOptions = {
     <!-- Content -->
     <ScrollArea class="flex-1">
       <div class="p-6 space-y-6">
+        <!-- Error State -->
+        <ErrorState
+          v-if="error && !isLoading"
+          :title="$t('common.loadErrorTitle')"
+          :description="error"
+          :retry-label="$t('common.retry')"
+          @retry="fetchAnalytics"
+        />
+
         <!-- Analytics Type Tabs -->
-        <Tabs v-model="activeTab" class="w-full">
+        <Tabs v-if="!error" v-model="activeTab" class="w-full">
           <TabsList class="grid w-full grid-cols-4 lg:w-auto lg:inline-flex">
             <TabsTrigger value="analytics">
               <MessageSquare class="h-4 w-4 lg:mr-2" />

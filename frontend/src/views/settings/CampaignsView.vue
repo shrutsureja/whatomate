@@ -45,7 +45,7 @@ import { campaignsService, templatesService, accountsService } from '@/services/
 import { wsService } from '@/services/websocket'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { toast } from 'vue-sonner'
-import { PageHeader, DataTable, DeleteConfirmDialog, SearchInput, type Column } from '@/components/shared'
+import { PageHeader, DataTable, DeleteConfirmDialog, ConfirmDialog, SearchInput, IconButton, ErrorState, type Column } from '@/components/shared'
 import HeaderMediaUpload from '@/components/shared/HeaderMediaUpload.vue'
 import { useHeaderMedia } from '@/composables/useHeaderMedia'
 import { getErrorMessage } from '@/lib/api-utils'
@@ -383,8 +383,18 @@ const newCampaign = ref({
 // AlertDialog state
 const deleteDialogOpen = ref(false)
 const cancelDialogOpen = ref(false)
+const startDialogOpen = ref(false)
+const pauseDialogOpen = ref(false)
 const campaignToDelete = ref<Campaign | null>(null)
 const campaignToCancel = ref<Campaign | null>(null)
+const campaignToStart = ref<Campaign | null>(null)
+const campaignToPause = ref<Campaign | null>(null)
+const isDeletingCampaign = ref(false)
+const isStartingCampaign = ref(false)
+const isPausingCampaign = ref(false)
+
+// Error state
+const error = ref<string | null>(null)
 
 // WebSocket subscription for real-time stats updates
 let unsubscribeCampaignStats: (() => void) | null = null
@@ -418,6 +428,7 @@ onUnmounted(() => {
 
 async function fetchCampaigns() {
   isLoading.value = true
+  error.value = null
   try {
     const { from, to } = getDateRange.value
     const params: Record<string, string | number> = {
@@ -437,8 +448,9 @@ async function fetchCampaigns() {
     const data = response.data.data || response.data
     campaigns.value = data.campaigns || []
     totalItems.value = data.total ?? campaigns.value.length
-  } catch (error) {
-    console.error('Failed to fetch campaigns:', error)
+  } catch (err: any) {
+    console.error('Failed to fetch campaigns:', err)
+    error.value = getErrorMessage(err, t('campaigns.fetchFailed'))
     campaigns.value = []
     totalItems.value = 0
   } finally {
@@ -620,23 +632,47 @@ async function saveCampaign() {
   }
 }
 
-async function startCampaign(campaign: Campaign) {
+function openStartDialog(campaign: Campaign) {
+  campaignToStart.value = campaign
+  startDialogOpen.value = true
+}
+
+async function confirmStartCampaign() {
+  if (!campaignToStart.value) return
+
+  isStartingCampaign.value = true
   try {
-    await campaignsService.start(campaign.id)
+    await campaignsService.start(campaignToStart.value.id)
     toast.success(t('campaigns.campaignStarted'))
+    startDialogOpen.value = false
+    campaignToStart.value = null
     await fetchCampaigns()
   } catch (error: any) {
     toast.error(getErrorMessage(error, t('campaigns.startFailed')))
+  } finally {
+    isStartingCampaign.value = false
   }
 }
 
-async function pauseCampaign(campaign: Campaign) {
+function openPauseDialog(campaign: Campaign) {
+  campaignToPause.value = campaign
+  pauseDialogOpen.value = true
+}
+
+async function confirmPauseCampaign() {
+  if (!campaignToPause.value) return
+
+  isPausingCampaign.value = true
   try {
-    await campaignsService.pause(campaign.id)
+    await campaignsService.pause(campaignToPause.value.id)
     toast.success(t('campaigns.campaignPaused'))
+    pauseDialogOpen.value = false
+    campaignToPause.value = null
     await fetchCampaigns()
   } catch (error: any) {
     toast.error(getErrorMessage(error, t('campaigns.pauseFailed')))
+  } finally {
+    isPausingCampaign.value = false
   }
 }
 
@@ -678,6 +714,7 @@ function openDeleteDialog(campaign: Campaign) {
 async function confirmDeleteCampaign() {
   if (!campaignToDelete.value) return
 
+  isDeletingCampaign.value = true
   try {
     await campaignsService.delete(campaignToDelete.value.id)
     toast.success(t('common.deletedSuccess', { resource: t('resources.Campaign') }))
@@ -686,6 +723,8 @@ async function confirmDeleteCampaign() {
     await fetchCampaigns()
   } catch (error: any) {
     toast.error(getErrorMessage(error, t('common.failedDelete', { resource: t('resources.campaign') })))
+  } finally {
+    isDeletingCampaign.value = false
   }
 }
 
@@ -1381,7 +1420,15 @@ async function addRecipientsFromCSV() {
               </div>
             </CardHeader>
             <CardContent>
+              <ErrorState
+                v-if="error && !isLoading"
+                :title="$t('campaigns.fetchFailedTitle')"
+                :description="error"
+                :retry-label="$t('common.retry')"
+                @retry="fetchCampaigns"
+              />
               <DataTable
+                v-else
                 :items="campaigns"
                 :columns="columns"
                 :is-loading="isLoading"
@@ -1431,91 +1478,65 @@ async function addRecipientsFromCSV() {
                 </template>
                 <template #cell-actions="{ item: campaign }">
                   <div class="flex items-center justify-end gap-1">
-                    <Button variant="ghost" size="icon" class="h-8 w-8" @click="viewRecipients(campaign)" title="View Recipients">
-                      <Eye class="h-4 w-4" />
-                    </Button>
-                    <Button v-if="campaign.status === 'draft'" variant="ghost" size="icon" class="h-8 w-8" @click="openAddRecipientsDialog(campaign as any)" title="Add Recipients">
-                      <UserPlus class="h-4 w-4" />
-                    </Button>
-                    <Button v-if="campaign.status === 'draft'" variant="ghost" size="icon" class="h-8 w-8" @click="openEditDialog(campaign)" title="Edit">
-                      <Pencil class="h-4 w-4" />
-                    </Button>
-                    <Tooltip v-if="campaign.status === 'draft' && campaignNeedsMedia(campaign) && !campaignHasMedia(campaign)">
-                      <TooltipTrigger as-child>
-                        <Button variant="ghost" size="icon" class="h-8 w-8 text-amber-500" @click="triggerMediaUpload(campaign)">
-                          <ImageIcon class="h-4 w-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>{{ $t('campaigns.uploadMedia') }}</TooltipContent>
-                    </Tooltip>
-                    <Tooltip v-if="campaignHasMedia(campaign)">
-                      <TooltipTrigger as-child>
-                        <Button variant="ghost" size="icon" class="h-8 w-8 text-green-600" @click="openMediaPreview(campaign)">
-                          <ImageIcon class="h-4 w-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>{{ $t('campaigns.viewMedia') }}</TooltipContent>
-                    </Tooltip>
-                    <Button
+                    <IconButton :icon="Eye" :label="$t('campaigns.viewRecipients')" class="h-8 w-8" @click="viewRecipients(campaign)" />
+                    <IconButton v-if="campaign.status === 'draft'" :icon="UserPlus" :label="$t('campaigns.addRecipients')" class="h-8 w-8" @click="openAddRecipientsDialog(campaign as any)" />
+                    <IconButton v-if="campaign.status === 'draft'" :icon="Pencil" :label="$t('campaigns.editCampaign')" class="h-8 w-8" @click="openEditDialog(campaign)" />
+                    <IconButton
+                      v-if="campaign.status === 'draft' && campaignNeedsMedia(campaign) && !campaignHasMedia(campaign)"
+                      :icon="ImageIcon"
+                      :label="$t('campaigns.uploadMedia')"
+                      class="h-8 w-8 text-amber-500"
+                      @click="triggerMediaUpload(campaign)"
+                    />
+                    <IconButton
+                      v-if="campaignHasMedia(campaign)"
+                      :icon="ImageIcon"
+                      :label="$t('campaigns.viewMedia')"
+                      class="h-8 w-8 text-green-600"
+                      @click="openMediaPreview(campaign)"
+                    />
+                    <IconButton
                       v-if="campaign.status === 'draft' || campaign.status === 'scheduled'"
-                      variant="ghost"
-                      size="icon"
+                      :icon="Play"
+                      :label="$t('campaigns.start')"
                       class="h-8 w-8 text-green-600"
-                      @click="startCampaign(campaign)"
-                      title="Start"
-                    >
-                      <Play class="h-4 w-4" />
-                    </Button>
-                    <Button
+                      @click="openStartDialog(campaign)"
+                    />
+                    <IconButton
                       v-if="campaign.status === 'running' || campaign.status === 'processing'"
-                      variant="ghost"
-                      size="icon"
+                      :icon="Pause"
+                      :label="$t('campaigns.pause')"
                       class="h-8 w-8"
-                      @click="pauseCampaign(campaign)"
-                      title="Pause"
-                    >
-                      <Pause class="h-4 w-4" />
-                    </Button>
-                    <Button
+                      @click="openPauseDialog(campaign)"
+                    />
+                    <IconButton
                       v-if="campaign.status === 'paused'"
-                      variant="ghost"
-                      size="icon"
+                      :icon="Play"
+                      :label="$t('campaigns.resume')"
                       class="h-8 w-8 text-green-600"
-                      @click="startCampaign(campaign)"
-                      title="Resume"
-                    >
-                      <Play class="h-4 w-4" />
-                    </Button>
-                    <Button
+                      @click="openStartDialog(campaign)"
+                    />
+                    <IconButton
                       v-if="campaign.failed_count > 0 && (campaign.status === 'completed' || campaign.status === 'paused' || campaign.status === 'failed')"
-                      variant="ghost"
-                      size="icon"
+                      :icon="RefreshCw"
+                      :label="$t('campaigns.retryFailed')"
                       class="h-8 w-8"
                       @click="retryFailed(campaign)"
-                      title="Retry Failed"
-                    >
-                      <RefreshCw class="h-4 w-4" />
-                    </Button>
-                    <Button
+                    />
+                    <IconButton
                       v-if="campaign.status === 'running' || campaign.status === 'paused' || campaign.status === 'processing' || campaign.status === 'queued'"
-                      variant="ghost"
-                      size="icon"
+                      :icon="XCircle"
+                      :label="$t('campaigns.cancelCampaign')"
                       class="h-8 w-8 text-destructive"
                       @click="openCancelDialog(campaign)"
-                      title="Cancel"
-                    >
-                      <XCircle class="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
+                    />
+                    <IconButton
+                      :icon="Trash2"
+                      :label="$t('campaigns.deleteCampaign')"
                       class="h-8 w-8 text-destructive"
-                      @click="openDeleteDialog(campaign)"
                       :disabled="campaign.status === 'running' || campaign.status === 'processing'"
-                      title="Delete"
-                    >
-                      <Trash2 class="h-4 w-4" />
-                    </Button>
+                      @click="openDeleteDialog(campaign)"
+                    />
                   </div>
                 </template>
                 <template #empty-action>
@@ -1887,7 +1908,30 @@ async function addRecipientsFromCSV() {
       v-model:open="deleteDialogOpen"
       :title="$t('campaigns.deleteCampaign')"
       :item-name="campaignToDelete?.name"
+      :is-submitting="isDeletingCampaign"
       @confirm="confirmDeleteCampaign"
+    />
+
+    <!-- Start Confirmation Dialog -->
+    <ConfirmDialog
+      v-model:open="startDialogOpen"
+      :title="$t('campaigns.startConfirmTitle')"
+      :description="$t('campaigns.startConfirmDesc', { name: campaignToStart?.name })"
+      :confirm-label="$t('campaigns.start')"
+      :cancel-label="$t('common.cancel')"
+      :is-submitting="isStartingCampaign"
+      @confirm="confirmStartCampaign"
+    />
+
+    <!-- Pause Confirmation Dialog -->
+    <ConfirmDialog
+      v-model:open="pauseDialogOpen"
+      :title="$t('campaigns.pauseConfirmTitle')"
+      :description="$t('campaigns.pauseConfirmDesc', { name: campaignToPause?.name })"
+      :confirm-label="$t('campaigns.pause')"
+      :cancel-label="$t('common.cancel')"
+      :is-submitting="isPausingCampaign"
+      @confirm="confirmPauseCampaign"
     />
 
     <!-- Cancel Confirmation Dialog -->
