@@ -2,7 +2,6 @@ package audit
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -126,7 +125,9 @@ func toMap(v any) map[string]any {
 		return nil
 	}
 	var m map[string]any
-	json.Unmarshal(b, &m)
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil
+	}
 	return m
 }
 
@@ -155,5 +156,5 @@ func FormatFieldLabel(field string) string {
 			result = append(result, field[i])
 		}
 	}
-	return fmt.Sprintf("%s", result)
+	return string(result)
 }
