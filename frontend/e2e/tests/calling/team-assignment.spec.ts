@@ -15,8 +15,9 @@ test.describe('Team Assignment Strategy for Calls', () => {
 
     // Fill name
     await page.locator('input').first().fill(teamName)
+    await page.waitForTimeout(200)
 
-    // Select round_robin strategy
+    // Select round_robin strategy (default, but click to verify it works)
     const strategySelect = page.locator('button[role="combobox"]').first()
     if (await strategySelect.isVisible()) {
       await strategySelect.click()
@@ -24,8 +25,10 @@ test.describe('Team Assignment Strategy for Calls', () => {
     }
 
     // Create
-    await page.getByRole('button', { name: /Create/i }).click()
-    await page.waitForLoadState('networkidle')
+    const createBtn = page.getByRole('button', { name: /Create/i })
+    await expect(createBtn).toBeVisible({ timeout: 5000 })
+    await createBtn.click()
+    await page.waitForTimeout(2000)
 
     // Verify team was created - should redirect to detail page
     expect(page.url()).not.toContain('/new')
@@ -45,6 +48,7 @@ test.describe('Team Assignment Strategy for Calls', () => {
     await page.waitForLoadState('networkidle')
 
     await page.locator('input').first().fill(teamName)
+    await page.waitForTimeout(200)
 
     const strategySelect = page.locator('button[role="combobox"]').first()
     if (await strategySelect.isVisible()) {
@@ -52,8 +56,10 @@ test.describe('Team Assignment Strategy for Calls', () => {
       await page.getByRole('option', { name: /load.?balanced/i }).click()
     }
 
-    await page.getByRole('button', { name: /Create/i }).click()
-    await page.waitForLoadState('networkidle')
+    const createBtn = page.getByRole('button', { name: /Create/i })
+    await expect(createBtn).toBeVisible({ timeout: 5000 })
+    await createBtn.click()
+    await page.waitForTimeout(2000)
 
     await page.goto('/settings/teams')
     await page.waitForLoadState('networkidle')
@@ -69,6 +75,7 @@ test.describe('Team Assignment Strategy for Calls', () => {
     await page.waitForLoadState('networkidle')
 
     await page.locator('input').first().fill(teamName)
+    await page.waitForTimeout(200)
 
     const strategySelect = page.locator('button[role="combobox"]').first()
     if (await strategySelect.isVisible()) {
@@ -76,8 +83,10 @@ test.describe('Team Assignment Strategy for Calls', () => {
       await page.getByRole('option', { name: /manual/i }).click()
     }
 
-    await page.getByRole('button', { name: /Create/i }).click()
-    await page.waitForLoadState('networkidle')
+    const createBtn = page.getByRole('button', { name: /Create/i })
+    await expect(createBtn).toBeVisible({ timeout: 5000 })
+    await createBtn.click()
+    await page.waitForTimeout(2000)
 
     await page.goto('/settings/teams')
     await page.waitForLoadState('networkidle')
