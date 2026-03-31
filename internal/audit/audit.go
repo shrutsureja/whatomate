@@ -23,6 +23,16 @@ var skipFields = map[string]bool{
 	"active_until":         true,
 	"whatsapp_account":     true,
 	"case_sensitive":       true,
+	"completion_config":    true,
+	"panel_config":         true,
+	"canvas_layout":        true,
+	"steps":                true,
+	"initial_template":     true,
+	"cancel_keywords":      true,
+	"trigger_button_id":    true,
+	"initial_message_type": true,
+	"initial_template_id":  true,
+	"timeout_message":      true,
 }
 
 // flattenFields extracts readable sub-fields from JSONB objects.

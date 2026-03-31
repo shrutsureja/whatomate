@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -817,6 +819,8 @@ func (a *App) CreateChatbotFlow(r *fastglue.Request) error {
 		PanelConfig:       models.JSONB(req.PanelConfig),
 		CanvasLayout:      models.JSONB(req.CanvasLayout),
 		IsEnabled:         req.Enabled,
+		CreatedByID:       &userID,
+		UpdatedByID:       &userID,
 	}
 
 	if err := tx.Create(&flow).Error; err != nil {
@@ -872,6 +876,9 @@ func (a *App) CreateChatbotFlow(r *fastglue.Request) error {
 	// Invalidate cache
 	a.InvalidateChatbotFlowsCache(orgID)
 
+	audit.LogAudit(a.DB, orgID, userID, audit.GetUserName(a.DB, userID),
+		"chatbot_flow", flow.ID, models.AuditActionCreated, nil, &flow)
+
 	return r.SendEnvelope(map[string]interface{}{
 		"id":      flow.ID.String(),
 		"message": "Flow created successfully",
@@ -922,10 +929,12 @@ func (a *App) UpdateChatbotFlow(r *fastglue.Request) error {
 		return nil
 	}
 
-	flow, err := findByIDAndOrg[models.ChatbotFlow](a.DB, r, id, orgID, "Flow")
+	flow, err := findByIDAndOrg[models.ChatbotFlow](a.DB.Preload("Steps"), r, id, orgID, "Flow")
 	if err != nil {
 		return nil
 	}
+
+	oldFlow := *flow // value copy for audit
 
 	var req struct {
 		Name              *string                `json:"name"`
@@ -977,6 +986,7 @@ func (a *App) UpdateChatbotFlow(r *fastglue.Request) error {
 	if req.Enabled != nil {
 		flow.IsEnabled = *req.Enabled
 	}
+	flow.UpdatedByID = &userID
 
 	if err := tx.Save(flow).Error; err != nil {
 		tx.Rollback()
@@ -1041,6 +1051,24 @@ func (a *App) UpdateChatbotFlow(r *fastglue.Request) error {
 	// Invalidate cache
 	a.InvalidateChatbotFlowsCache(orgID)
 
+	// Build extra changes for steps if they were updated
+	var extraChanges []map[string]any
+	if len(req.Steps) > 0 {
+		// Summarize step names for the audit log
+		stepNames := make([]string, len(req.Steps))
+		for i, s := range req.Steps {
+			stepNames[i] = s.StepName
+		}
+		extraChanges = append(extraChanges, map[string]any{
+			"field":     "steps",
+			"old_value": fmt.Sprintf("%d steps", len(oldFlow.Steps)),
+			"new_value": fmt.Sprintf("%d steps: %s", len(req.Steps), strings.Join(stepNames, ", ")),
+		})
+	}
+
+	audit.LogAudit(a.DB, orgID, userID, audit.GetUserName(a.DB, userID),
+		"chatbot_flow", flow.ID, models.AuditActionUpdated, &oldFlow, flow, extraChanges...)
+
 	return r.SendEnvelope(map[string]interface{}{
 		"message": "Flow updated successfully",
 	})
@@ -1061,6 +1089,10 @@ func (a *App) DeleteChatbotFlow(r *fastglue.Request) error {
 	if err != nil {
 		return nil
 	}
+
+	// Load flow for audit before deleting
+	var flowForAudit models.ChatbotFlow
+	a.DB.Where("id = ? AND organization_id = ?", id, orgID).First(&flowForAudit)
 
 	// Delete flow and steps in transaction
 	tx := a.DB.Begin()
@@ -1088,6 +1120,9 @@ func (a *App) DeleteChatbotFlow(r *fastglue.Request) error {
 
 	// Invalidate cache
 	a.InvalidateChatbotFlowsCache(orgID)
+
+	audit.LogAudit(a.DB, orgID, userID, audit.GetUserName(a.DB, userID),
+		"chatbot_flow", id, models.AuditActionDeleted, &flowForAudit, nil)
 
 	return r.SendEnvelope(map[string]interface{}{
 		"message": "Flow deleted successfully",

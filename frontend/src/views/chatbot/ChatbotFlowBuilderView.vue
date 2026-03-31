@@ -58,6 +58,7 @@ import draggable from 'vuedraggable'
 import FlowChart from '@/components/chatbot/flow-builder/FlowChart.vue'
 import FlowPreviewPanel from '@/components/chatbot/flow-preview/FlowPreviewPanel.vue'
 import UnsavedChangesDialog from '@/components/shared/UnsavedChangesDialog.vue'
+import AuditLogPanel from '@/components/shared/AuditLogPanel.vue'
 
 interface ApiConfig {
   url: string
@@ -1814,6 +1815,17 @@ function confirmCancel() {
         </div>
       </Card>
     </div>
+
+    <!-- Activity Log (collapsible at the bottom) -->
+    <Collapsible v-if="!isNewFlow && flowId" class="border-t">
+      <CollapsibleTrigger class="flex items-center justify-between w-full px-4 py-2 text-sm font-medium hover:bg-muted/50 transition-colors">
+        {{ $t('common.activityLog', 'Activity Log') }}
+        <ChevronDown class="h-4 w-4" />
+      </CollapsibleTrigger>
+      <CollapsibleContent class="px-4 pb-4">
+        <AuditLogPanel resource-type="chatbot_flow" :resource-id="flowId" />
+      </CollapsibleContent>
+    </Collapsible>
 
     <!-- Delete Step Dialog -->
     <AlertDialog v-model:open="deleteStepDialogOpen">
