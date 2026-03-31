@@ -73,7 +73,7 @@ onMounted(() => loadLogs())
 </script>
 
 <template>
-  <Card>
+  <Card class="overflow-hidden">
     <CardHeader class="pb-3">
       <div class="flex items-center gap-2">
         <History class="h-4 w-4 text-muted-foreground" />

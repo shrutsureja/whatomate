@@ -474,7 +474,7 @@ onMounted(() => {
       </div>
 
       <!-- Right Panel -->
-      <div class="w-[320px] border-l bg-background shrink-0 flex flex-col">
+      <div class="w-[320px] min-w-0 border-l bg-background shrink-0 flex flex-col overflow-hidden">
         <!-- Node Properties (when a node is selected) -->
         <div v-if="selectedIVRNode" class="flex-1 overflow-y-auto">
           <IVRNodeProperties
