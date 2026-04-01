@@ -1354,7 +1354,7 @@ async function addRecipientsFromCSV() {
     <!-- Campaigns List -->
     <ScrollArea class="flex-1">
       <div class="p-6">
-        <div class="max-w-6xl mx-auto">
+        <div>
           <Card>
             <CardHeader>
               <div class="flex items-center justify-between flex-wrap gap-4">
