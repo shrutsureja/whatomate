@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -19,7 +19,7 @@ import { Plus, Users, Pencil, Trash2, MessageSquare, Check, ChevronsUpDown, X, D
 import { getErrorMessage } from '@/lib/api-utils'
 import { formatDate } from '@/lib/utils'
 import { getTagColorClass } from '@/lib/constants'
-import { useDebounceFn } from '@vueuse/core'
+import { useSearchPagination } from '@/composables/useSearchPagination'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 
@@ -73,13 +73,7 @@ const editingContact = ref<Contact | null>(null)
 const deleteDialogOpen = ref(false)
 const contactToDelete = ref<Contact | null>(null)
 const formData = ref<ContactFormData>({ ...defaultFormData })
-const searchQuery = ref('')
 const tagSelectorOpen = ref(false)
-
-// Pagination state
-const currentPage = ref(1)
-const totalItems = ref(0)
-const pageSize = 20
 
 // Sorting state
 const sortKey = ref('last_message_at')
@@ -176,18 +170,9 @@ async function fetchAccounts() {
   }
 }
 
-// Debounced search
-const debouncedSearch = useDebounceFn(() => {
-  currentPage.value = 1
-  fetchContacts()
-}, 300)
-
-watch(searchQuery, () => debouncedSearch())
-
-function handlePageChange(page: number) {
-  currentPage.value = page
-  fetchContacts()
-}
+const { searchQuery, currentPage, totalItems, pageSize, handlePageChange } = useSearchPagination({
+  fetchFn: () => fetchContacts(),
+})
 
 onMounted(() => {
   fetchContacts()

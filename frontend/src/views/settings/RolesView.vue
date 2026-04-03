@@ -21,7 +21,7 @@ import { Plus, Pencil, Trash2, Loader2, Shield, Users, Lock, Star } from 'lucide
 import { useCrudState } from '@/composables/useCrudState'
 import { getErrorMessage } from '@/lib/api-utils'
 import { formatDate } from '@/lib/utils'
-import { useDebounceFn } from '@vueuse/core'
+import { useSearchPagination } from '@/composables/useSearchPagination'
 
 const { t } = useI18n()
 
@@ -44,27 +44,12 @@ const {
 } = useCrudState<Role, RoleFormData>(defaultFormData)
 
 const roles = ref<Role[]>([])
-const searchQuery = ref('')
 const isDeleting = ref(false)
 const error = ref(false)
 
-// Pagination state
-const currentPage = ref(1)
-const totalItems = ref(0)
-const pageSize = 20
-
-// Debounced search
-const debouncedSearch = useDebounceFn(() => {
-  currentPage.value = 1
-  fetchRoles()
-}, 300)
-
-watch(searchQuery, () => debouncedSearch())
-
-function handlePageChange(page: number) {
-  currentPage.value = page
-  fetchRoles()
-}
+const { searchQuery, currentPage, totalItems, pageSize, handlePageChange } = useSearchPagination({
+  fetchFn: () => fetchRoles(),
+})
 
 const isSuperAdmin = computed(() => authStore.user?.is_super_admin ?? false)
 const canEditPermissions = computed(() => {

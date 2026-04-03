@@ -31,7 +31,7 @@ import {
   AlertCircle,
 } from 'lucide-vue-next'
 import { formatDate } from '@/lib/utils'
-import { useDebounceFn } from '@vueuse/core'
+import { useSearchPagination } from '@/composables/useSearchPagination'
 import { useDateRange } from '@/composables/useDateRange'
 
 const { t } = useI18n()
@@ -71,17 +71,9 @@ const columns = computed<Column<Campaign>[]>(() => [
 
 const sortKey = ref('created_at')
 const sortDirection = ref<'asc' | 'desc'>('desc')
-const searchQuery = ref('')
-
-// Pagination state
-const currentPage = ref(1)
-const totalItems = ref(0)
-const pageSize = 20
-
-function handlePageChange(page: number) {
-  currentPage.value = page
-  fetchCampaigns()
-}
+const { searchQuery, currentPage, totalItems, pageSize, handlePageChange, resetAndFetch } = useSearchPagination({
+  fetchFn: () => fetchCampaigns(),
+})
 
 // Filter state
 const filterStatus = ref<string>('all')
@@ -177,19 +169,10 @@ function applyCustomRange() {
   fetchCampaigns()
 }
 
-// Debounced search
-const debouncedSearch = useDebounceFn(() => {
-  currentPage.value = 1
-  fetchCampaigns()
-}, 300)
-
-watch(searchQuery, () => debouncedSearch())
-
 // Watch for filter changes
 watch([filterStatus, selectedRange], () => {
-  currentPage.value = 1
   if (selectedRange.value !== 'custom') {
-    fetchCampaigns()
+    resetAndFetch()
   }
 })
 

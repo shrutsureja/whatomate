@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { apiKeysService } from '@/services/api'
 import { Button } from '@/components/ui/button'
@@ -15,7 +15,7 @@ import { Plus, Trash2, Copy, Key, AlertTriangle } from 'lucide-vue-next'
 import { useCrudState } from '@/composables/useCrudState'
 import { getErrorMessage } from '@/lib/api-utils'
 import { formatDate } from '@/lib/utils'
-import { useDebounceFn } from '@vueuse/core'
+import { useSearchPagination } from '@/composables/useSearchPagination'
 
 const { t } = useI18n()
 
@@ -54,10 +54,9 @@ const isKeyDisplayOpen = ref(false)
 const newlyCreatedKey = ref<NewAPIKeyResponse | null>(null)
 const error = ref<string | null>(null)
 
-// Pagination state
-const currentPage = ref(1)
-const totalItems = ref(0)
-const pageSize = 20
+const { searchQuery, currentPage, totalItems, pageSize, handlePageChange } = useSearchPagination({
+  fetchFn: () => fetchItems(),
+})
 
 const columns = computed<Column<APIKey>[]>(() => [
   { key: 'name', label: t('apiKeys.name'), sortable: true },
@@ -71,8 +70,6 @@ const columns = computed<Column<APIKey>[]>(() => [
 // Sorting state
 const sortKey = ref('name')
 const sortDirection = ref<'asc' | 'desc'>('asc')
-
-const searchQuery = ref('')
 
 async function fetchItems() {
   isLoading.value = true
@@ -92,19 +89,6 @@ async function fetchItems() {
   } finally {
     isLoading.value = false
   }
-}
-
-// Debounced search
-const debouncedSearch = useDebounceFn(() => {
-  currentPage.value = 1
-  fetchItems()
-}, 300)
-
-watch(searchQuery, () => debouncedSearch())
-
-function handlePageChange(page: number) {
-  currentPage.value = page
-  fetchItems()
 }
 
 async function createAPIKey() {

@@ -17,7 +17,7 @@ import { toast } from 'vue-sonner'
 import { Plus, MessageSquareText, Pencil, Trash2, Copy } from 'lucide-vue-next'
 import { getErrorMessage } from '@/lib/api-utils'
 import { CANNED_RESPONSE_CATEGORIES, getLabelFromValue } from '@/lib/constants'
-import { useDebounceFn } from '@vueuse/core'
+import { useSearchPagination } from '@/composables/useSearchPagination'
 
 const { t } = useI18n()
 
@@ -38,13 +38,7 @@ const {
   isSubmitting, isDialogOpen, editingItem: editingResponse, deleteDialogOpen, itemToDelete: responseToDelete,
   formData, openCreateDialog, openEditDialog: baseOpenEditDialog, openDeleteDialog, closeDialog, closeDeleteDialog,
 } = useCrudState<CannedResponse, CannedResponseFormData>(defaultFormData)
-const searchQuery = ref('')
 const selectedCategory = ref('all')
-
-// Pagination state
-const currentPage = ref(1)
-const totalItems = ref(0)
-const pageSize = 20
 
 const columns = computed<Column<CannedResponse>[]>(() => [
   { key: 'name', label: t('cannedResponses.name'), sortable: true },
@@ -79,22 +73,13 @@ async function fetchItems() {
   }
 }
 
-// Debounced search
-const debouncedSearch = useDebounceFn(() => {
-  currentPage.value = 1
-  fetchItems()
-}, 300)
-
-watch(searchQuery, () => debouncedSearch())
-watch(selectedCategory, () => {
-  currentPage.value = 1
-  fetchItems()
+const { searchQuery, currentPage, totalItems, pageSize, handlePageChange, resetAndFetch } = useSearchPagination({
+  fetchFn: () => fetchItems(),
 })
 
-function handlePageChange(page: number) {
-  currentPage.value = page
-  fetchItems()
-}
+watch(selectedCategory, () => {
+  resetAndFetch()
+})
 
 function openEditDialog(response: CannedResponse) {
   baseOpenEditDialog(response, (r) => ({

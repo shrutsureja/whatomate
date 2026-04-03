@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -11,7 +11,7 @@ import { toast } from 'vue-sonner'
 import { PageHeader, SearchInput, DataTable, DeleteConfirmDialog, IconButton, ErrorState, type Column } from '@/components/shared'
 import { getErrorMessage } from '@/lib/api-utils'
 import { Plus, Pencil, Trash2, Key } from 'lucide-vue-next'
-import { useDebounceFn } from '@vueuse/core'
+import { useSearchPagination } from '@/composables/useSearchPagination'
 
 const { t } = useI18n()
 
@@ -30,7 +30,6 @@ const rules = ref<KeywordRule[]>([])
 const isLoading = ref(true)
 const isDeleting = ref(false)
 const error = ref<string | null>(null)
-const searchQuery = ref('')
 const deleteDialogOpen = ref(false)
 const ruleToDelete = ref<KeywordRule | null>(null)
 
@@ -44,10 +43,9 @@ function closeDeleteDialog() {
   ruleToDelete.value = null
 }
 
-// Pagination state
-const currentPage = ref(1)
-const totalItems = ref(0)
-const pageSize = 20
+const { searchQuery, currentPage, totalItems, pageSize, handlePageChange } = useSearchPagination({
+  fetchFn: () => fetchRules(),
+})
 
 const columns = computed<Column<KeywordRule>[]>(() => [
   { key: 'keywords', label: t('keywords.keywordsColumn') },
@@ -85,22 +83,6 @@ async function fetchRules() {
   } finally {
     isLoading.value = false
   }
-}
-
-// Debounced search to avoid too many API calls
-const debouncedSearch = useDebounceFn(() => {
-  currentPage.value = 1
-  fetchRules()
-}, 300)
-
-// Watch search query changes
-watch(searchQuery, () => {
-  debouncedSearch()
-})
-
-function handlePageChange(page: number) {
-  currentPage.value = page
-  fetchRules()
 }
 
 async function confirmDeleteRule() {

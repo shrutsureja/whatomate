@@ -14,7 +14,7 @@ import { useOrganizationsStore } from '@/stores/organizations'
 import { toast } from 'vue-sonner'
 import { Plus, RefreshCw, FileText, Pencil, Trash2, Loader2, MessageSquare, Image, FileIcon, Video } from 'lucide-vue-next'
 import { getErrorMessage } from '@/lib/api-utils'
-import { useDebounceFn } from '@vueuse/core'
+import { useSearchPagination } from '@/composables/useSearchPagination'
 
 const { t } = useI18n()
 
@@ -50,7 +50,6 @@ const accounts = ref<WhatsAppAccount[]>([])
 const isLoading = ref(true)
 const error = ref<string | null>(null)
 const isSyncing = ref(false)
-const searchQuery = ref('')
 const selectedAccount = ref<string>(localStorage.getItem('templates_selected_account') || 'all')
 
 // Delete dialog state
@@ -58,10 +57,9 @@ const deleteDialogOpen = ref(false)
 const templateToDelete = ref<Template | null>(null)
 const isDeleting = ref(false)
 
-// Pagination state
-const currentPage = ref(1)
-const totalItems = ref(0)
-const pageSize = 20
+const { searchQuery, currentPage, totalItems, pageSize, handlePageChange } = useSearchPagination({
+  fetchFn: () => fetchTemplates(),
+})
 
 const columns = computed<Column<Template>[]>(() => [
   { key: 'name', label: t('templates.name'), sortable: true },
@@ -206,19 +204,6 @@ async function fetchTemplates() {
   } finally {
     isLoading.value = false
   }
-}
-
-// Debounced search
-const debouncedSearch = useDebounceFn(() => {
-  currentPage.value = 1
-  fetchTemplates()
-}, 300)
-
-watch(searchQuery, () => debouncedSearch())
-
-function handlePageChange(page: number) {
-  currentPage.value = page
-  fetchTemplates()
 }
 
 async function syncTemplates() {
