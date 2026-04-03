@@ -638,6 +638,7 @@ func (a *App) SendTemplateMessage(r *fastglue.Request) error {
 			defer f.Close()
 			headerFileData, err = io.ReadAll(f)
 			if err != nil {
+				a.Log.Error("Failed to read header file", "error", err)
 				return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to read header file", nil, "")
 			}
 			headerFileMimeType = fh.Header.Get("Content-Type")
@@ -772,6 +773,7 @@ func (a *App) SendTemplateMessage(r *fastglue.Request) error {
 			}
 			headerMediaData, err = io.ReadAll(resp.Body)
 			if err != nil {
+				a.Log.Error("Failed to read header media from URL", "error", err)
 				return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to read header media from URL", nil, "")
 			}
 			headerMimeType = resp.Header.Get("Content-Type")
