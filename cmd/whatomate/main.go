@@ -529,6 +529,34 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 		return r
 	})
 
+	// Global rate limit on all /api/ routes, keyed by user ID (or IP if unauthenticated).
+	// Runs after auth so the user identity is available.
+	if cfg.RateLimit.Enabled {
+		apiMax := cfg.RateLimit.APIMaxRequests
+		if apiMax == 0 {
+			apiMax = 200
+		}
+		apiWindow := cfg.RateLimit.APIWindowSeconds
+		if apiWindow == 0 {
+			apiWindow = 60
+		}
+		apiRL := middleware.UserAwareRateLimit(middleware.RateLimitOpts{
+			Redis:      rdb,
+			Log:        lo,
+			Max:        apiMax,
+			Window:     time.Duration(apiWindow) * time.Second,
+			KeyPrefix:  "api_global",
+			TrustProxy: cfg.RateLimit.TrustProxy,
+		})
+		g.Before(func(r *fastglue.Request) *fastglue.Request {
+			path := string(r.RequestCtx.Path())
+			if len(path) > 4 && path[:4] == "/api" {
+				return apiRL(r)
+			}
+			return r
+		})
+	}
+
 	// Role-based access control middleware
 	g.Before(func(r *fastglue.Request) *fastglue.Request {
 		method := string(r.RequestCtx.Method())
