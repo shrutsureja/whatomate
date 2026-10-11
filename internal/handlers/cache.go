@@ -100,9 +100,6 @@ func (a *App) getChatbotFlowsCached(orgID uuid.UUID) ([]models.ChatbotFlow, erro
 	// Cache miss - fetch from database
 	var flows []models.ChatbotFlow
 	if err := a.DB.Where("organization_id = ? AND is_enabled = true", orgID).
-		Preload("Steps", func(db *gorm.DB) *gorm.DB {
-			return db.Order("step_order ASC")
-		}).
 		Find(&flows).Error; err != nil {
 		return nil, err
 	}
@@ -206,11 +203,12 @@ func (a *App) deleteKeysByPattern(ctx context.Context, pattern string) {
 	}
 }
 
-// whatsAppAccountCache is used for caching since AccessToken and AppSecret have json:"-" tag
+// whatsAppAccountCache is used for caching since AccessToken, AppSecret, and Pin have json:"-" tag
 type whatsAppAccountCache struct {
 	models.WhatsAppAccount
 	AccessToken string `json:"access_token"`
 	AppSecret   string `json:"app_secret"`
+	Pin         string `json:"pin"`
 }
 
 // getWhatsAppAccountCached retrieves WhatsApp account by phone_id from cache or database
@@ -225,6 +223,7 @@ func (a *App) getWhatsAppAccountCached(phoneID string) (*models.WhatsAppAccount,
 		if err := json.Unmarshal([]byte(cached), &cacheData); err == nil {
 			cacheData.WhatsAppAccount.AccessToken = cacheData.AccessToken
 			cacheData.WhatsAppAccount.AppSecret = cacheData.AppSecret
+			cacheData.WhatsAppAccount.Pin = cacheData.Pin
 			a.decryptAccountSecrets(&cacheData.WhatsAppAccount)
 			return &cacheData.WhatsAppAccount, nil
 		}
@@ -236,11 +235,12 @@ func (a *App) getWhatsAppAccountCached(phoneID string) (*models.WhatsAppAccount,
 		return nil, err
 	}
 
-	// Cache the result (include AccessToken and AppSecret explicitly since they have json:"-")
+	// Cache the result (include AccessToken, AppSecret, and Pin explicitly since they have json:"-")
 	cacheData := whatsAppAccountCache{
 		WhatsAppAccount: account,
 		AccessToken:     account.AccessToken,
 		AppSecret:       account.AppSecret,
+		Pin:             account.Pin,
 	}
 	if data, err := json.Marshal(cacheData); err == nil {
 		a.Redis.Set(ctx, cacheKey, data, whatsappAccountCacheTTL)
@@ -427,15 +427,18 @@ func (a *App) getUserPermissionsCached(userID uuid.UUID, orgIDs ...uuid.UUID) (*
 		return nil, err
 	}
 
-	// Determine which role to use
+	// Determine which role to use. For a specific org the role has to come from
+	// that org's membership row — falling back to users.role_id would carry the
+	// user's home-org role (possibly admin) into a tenant they only belong to as
+	// a plain member. The fallback survives only for the user's own org, where
+	// legacy rows may predate user_organizations.
 	var roleID *uuid.UUID
 	if orgID != uuid.Nil {
-		// Look up role from user_organizations for this specific org
 		var userOrg models.UserOrganization
-		if err := a.DB.Where("user_id = ? AND organization_id = ?", userID, orgID).First(&userOrg).Error; err == nil && userOrg.RoleID != nil {
+		if err := a.DB.Where("user_id = ? AND organization_id = ?", userID, orgID).First(&userOrg).Error; err == nil {
 			roleID = userOrg.RoleID
-		} else {
-			// Fall back to user's default role
+		}
+		if roleID == nil && orgID == user.OrganizationID {
 			roleID = user.RoleID
 		}
 	} else {
@@ -443,7 +446,18 @@ func (a *App) getUserPermissionsCached(userID uuid.UUID, orgIDs ...uuid.UUID) (*
 	}
 
 	if roleID == nil {
-		return nil, gorm.ErrRecordNotFound
+		if !user.IsSuperAdmin {
+			return nil, gorm.ErrRecordNotFound
+		}
+		// Super admin in an org they hold no membership in: the flag alone grants
+		// access (HasPermission short-circuits on it), with no role-derived perms.
+		perms := UserPermissions{IsSuperAdmin: true, Permissions: []string{}}
+		if a.Redis != nil {
+			if data, err := json.Marshal(perms); err == nil {
+				a.Redis.Set(ctx, cacheKey, data, userPermissionsCacheTTL)
+			}
+		}
+		return &perms, nil
 	}
 
 	// Fetch role and load permissions via JOIN

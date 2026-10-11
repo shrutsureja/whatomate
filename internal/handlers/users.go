@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shridarpatil/whatomate/internal/audit"
 	"github.com/shridarpatil/whatomate/internal/models"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
@@ -77,7 +76,14 @@ type UserSettingsRequest struct {
 	EmailNotifications bool `json:"email_notifications"`
 	NewMessageAlerts   bool `json:"new_message_alerts"`
 	CampaignUpdates    bool `json:"campaign_updates"`
+	// CallRingtone picks which sound an incoming call plays, so a call is
+	// distinguishable from a new message. Empty leaves the current choice alone.
+	CallRingtone string `json:"call_ringtone"`
 }
+
+// callRingtones are the sounds an agent can pick for incoming calls. "none"
+// leaves the toast as the only alert.
+var callRingtones = map[string]bool{"ring": true, "beep": true, "none": true}
 
 // ChangePasswordRequest represents the request body for changing password
 type ChangePasswordRequest struct {
@@ -87,17 +93,22 @@ type ChangePasswordRequest struct {
 
 // ListUsers returns all users for the organization
 func (a *App) ListUsers(r *fastglue.Request) error {
-	orgID, userID, err := a.getOrgAndUserID(r)
+	orgID, _, err := a.requireAuth(r, models.ResourceUsers, models.ActionRead)
 	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
-	}
-
-	if err := a.requirePermission(r, userID, models.ResourceUsers, models.ActionRead); err != nil {
 		return nil
 	}
 
 	pg := parsePagination(r)
 	search := string(r.RequestCtx.QueryArgs().Peek("search"))
+	roleIDParam := string(r.RequestCtx.QueryArgs().Peek("role_id"))
+	onlineOnly := string(r.RequestCtx.QueryArgs().Peek("online_only")) == "true"
+
+	// Online user IDs for this org — fetched once and reused for both the
+	// online_only filter and the online_count badge in the response.
+	var onlineIDs []uuid.UUID
+	if a.WSHub != nil {
+		onlineIDs = a.WSHub.OnlineUserIDs(orgID)
+	}
 
 	// Query users via user_organizations to include cross-org members.
 	joinClause := "JOIN user_organizations ON user_organizations.user_id = users.id AND user_organizations.organization_id = ? AND user_organizations.deleted_at IS NULL"
@@ -107,6 +118,25 @@ func (a *App) ListUsers(r *fastglue.Request) error {
 	if search != "" {
 		countQuery = countQuery.Where("users.full_name ILIKE ? OR users.email ILIKE ?", "%"+search+"%", "%"+search+"%")
 		dataQuery = dataQuery.Where("users.full_name ILIKE ? OR users.email ILIKE ?", "%"+search+"%", "%"+search+"%")
+	}
+	if roleIDParam != "" {
+		if roleUUID, err := uuid.Parse(roleIDParam); err == nil {
+			countQuery = countQuery.Where("user_organizations.role_id = ?", roleUUID)
+			dataQuery = dataQuery.Where("user_organizations.role_id = ?", roleUUID)
+		}
+	}
+	if onlineOnly {
+		if len(onlineIDs) == 0 {
+			return r.SendEnvelope(map[string]any{
+				"users":        []UserResponse{},
+				"total":        0,
+				"page":         pg.Page,
+				"limit":        pg.Limit,
+				"online_count": 0,
+			})
+		}
+		countQuery = countQuery.Where("users.id IN ?", onlineIDs)
+		dataQuery = dataQuery.Where("users.id IN ?", onlineIDs)
 	}
 
 	var total int64
@@ -157,10 +187,11 @@ func (a *App) ListUsers(r *fastglue.Request) error {
 	}
 
 	return r.SendEnvelope(map[string]any{
-		"users": response,
-		"total": total,
-		"page":  pg.Page,
-		"limit": pg.Limit,
+		"users":        response,
+		"total":        total,
+		"page":         pg.Page,
+		"limit":        pg.Limit,
+		"online_count": len(onlineIDs),
 	})
 }
 
@@ -203,12 +234,8 @@ func (a *App) GetUser(r *fastglue.Request) error {
 
 // CreateUser creates a new user (admin only)
 func (a *App) CreateUser(r *fastglue.Request) error {
-	orgID, userID, err := a.getOrgAndUserID(r)
+	orgID, userID, err := a.requireAuth(r, models.ResourceUsers, models.ActionWrite)
 	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
-	}
-
-	if err := a.requirePermission(r, userID, models.ResourceUsers, models.ActionWrite); err != nil {
 		return nil
 	}
 
@@ -313,7 +340,7 @@ func (a *App) CreateUser(r *fastglue.Request) error {
 		softDeleted.IsActive = true
 		softDeleted.IsSuperAdmin = isSuperAdmin
 
-		audit.LogAudit(a.DB, orgID, userID, audit.GetUserName(a.DB, userID),
+		a.logAudit(orgID, userID,
 			"user", softDeleted.ID, models.AuditActionCreated, nil, userAuditSnapshot(&softDeleted))
 
 		return r.SendEnvelope(userToResponse(softDeleted))
@@ -349,7 +376,7 @@ func (a *App) CreateUser(r *fastglue.Request) error {
 	// Load role for response
 	a.DB.Preload("Role").First(&user, user.ID)
 
-	audit.LogAudit(a.DB, orgID, userID, audit.GetUserName(a.DB, userID),
+	a.logAudit(orgID, userID,
 		"user", user.ID, models.AuditActionCreated, nil, userAuditSnapshot(&user))
 
 	return r.SendEnvelope(userToResponse(user))
@@ -434,7 +461,7 @@ func (a *App) UpdateUser(r *fastglue.Request) error {
 		user.RoleID = req.RoleID
 		user.Role = &newRole
 
-		audit.LogAudit(a.DB, orgID, currentUserID, audit.GetUserName(a.DB, currentUserID),
+		a.logAudit(orgID, currentUserID,
 			"user", user.ID, models.AuditActionUpdated, oldSnap, userAuditSnapshot(&user))
 
 		resp := userToResponse(user)
@@ -521,7 +548,7 @@ func (a *App) UpdateUser(r *fastglue.Request) error {
 	// Load role for response
 	a.DB.Preload("Role").First(&user, user.ID)
 
-	audit.LogAudit(a.DB, orgID, currentUserID, audit.GetUserName(a.DB, currentUserID),
+	a.logAudit(orgID, currentUserID,
 		"user", user.ID, models.AuditActionUpdated, oldSnap, userAuditSnapshot(&user))
 
 	return r.SendEnvelope(userToResponse(user))
@@ -572,7 +599,7 @@ func (a *App) DeleteUser(r *fastglue.Request) error {
 		}
 		a.InvalidateUserPermissionsCache(id)
 
-		audit.LogAudit(a.DB, orgID, currentUserID, audit.GetUserName(a.DB, currentUserID),
+		a.logAudit(orgID, currentUserID,
 			"user", id, models.AuditActionDeleted, userAuditSnapshot(&user), nil)
 
 		return r.SendEnvelope(map[string]string{"message": "Member removed from organization"})
@@ -607,7 +634,7 @@ func (a *App) DeleteUser(r *fastglue.Request) error {
 	// Delete all UserOrganization entries for this user
 	a.DB.Where("user_id = ?", id).Delete(&models.UserOrganization{})
 
-	audit.LogAudit(a.DB, orgID, currentUserID, audit.GetUserName(a.DB, currentUserID),
+	a.logAudit(orgID, currentUserID,
 		"user", id, models.AuditActionDeleted, userAuditSnapshot(&user), nil)
 
 	return r.SendEnvelope(map[string]string{"message": "User deleted successfully"})
@@ -627,8 +654,9 @@ func (a *App) GetCurrentUser(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "User not found", nil, "")
 	}
 
-	// Use org from JWT context (may differ from DB after org switch)
-	orgID, _ := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
+	// Resolve the active org (honours X-Organization-ID); it may differ from the
+	// home org stored on the user row.
+	orgID, _ := a.getOrgID(r)
 	if orgID != uuid.Nil {
 		user.OrganizationID = orgID
 
@@ -699,10 +727,17 @@ func (a *App) UpdateCurrentUserSettings(r *fastglue.Request) error {
 
 	oldNotif := notificationSettingsSnapshot(user.Settings)
 
+	if req.CallRingtone != "" && !callRingtones[req.CallRingtone] {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Unknown call ringtone", nil, "")
+	}
+
 	// Update notification settings
 	user.Settings["email_notifications"] = req.EmailNotifications
 	user.Settings["new_message_alerts"] = req.NewMessageAlerts
 	user.Settings["campaign_updates"] = req.CampaignUpdates
+	if req.CallRingtone != "" {
+		user.Settings["call_ringtone"] = req.CallRingtone
+	}
 
 	if err := a.DB.Save(&user).Error; err != nil {
 		a.Log.Error("Failed to update user settings", "error", err)
@@ -710,7 +745,7 @@ func (a *App) UpdateCurrentUserSettings(r *fastglue.Request) error {
 	}
 
 	newNotif := notificationSettingsSnapshot(user.Settings)
-	audit.LogAudit(a.DB, orgID, userID, audit.GetUserName(a.DB, userID),
+	a.logAudit(orgID, userID,
 		models.ResourceSettingsNotification, userID, models.AuditActionUpdated, oldNotif, newNotif)
 
 	return r.SendEnvelope(map[string]any{
@@ -726,6 +761,7 @@ func notificationSettingsSnapshot(settings models.JSONB) map[string]any {
 		"email_notifications": settings["email_notifications"],
 		"new_message_alerts":  settings["new_message_alerts"],
 		"campaign_updates":    settings["campaign_updates"],
+		"call_ringtone":       settings["call_ringtone"],
 	}
 }
 
@@ -842,12 +878,12 @@ func userToResponse(user models.User) UserResponse {
 
 // MyOrganizationResponse represents an organization in the user's org list
 type MyOrganizationResponse struct {
-	OrganizationID uuid.UUID `json:"organization_id"`
-	Name           string    `json:"name"`
-	Slug           string    `json:"slug"`
+	OrganizationID uuid.UUID  `json:"organization_id"`
+	Name           string     `json:"name"`
+	Slug           string     `json:"slug"`
 	RoleID         *uuid.UUID `json:"role_id,omitempty"`
-	RoleName       string    `json:"role_name,omitempty"`
-	IsDefault      bool      `json:"is_default"`
+	RoleName       string     `json:"role_name,omitempty"`
+	IsDefault      bool       `json:"is_default"`
 }
 
 // ListMyOrganizations returns all organizations the current user belongs to
@@ -958,10 +994,10 @@ func (a *App) UpdateAvailability(r *fastglue.Request) error {
 	}
 
 	return r.SendEnvelope(map[string]any{
-		"message":             "Availability updated successfully",
-		"is_available":        user.IsAvailable,
-		"status":              status,
-		"break_started_at":    breakStartedAt,
-		"transfers_to_queue":  transfersReturned,
+		"message":            "Availability updated successfully",
+		"is_available":       user.IsAvailable,
+		"status":             status,
+		"break_started_at":   breakStartedAt,
+		"transfers_to_queue": transfersReturned,
 	})
 }

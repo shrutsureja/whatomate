@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shridarpatil/whatomate/internal/audit"
+	"github.com/shridarpatil/whatomate/internal/crypto"
 	"github.com/shridarpatil/whatomate/internal/database"
 	"github.com/shridarpatil/whatomate/internal/models"
 	"github.com/shridarpatil/whatomate/internal/utils"
@@ -17,11 +18,20 @@ import (
 // map suitable for audit diffing. Reading from a nil JSONB map returns the
 // zero value (nil), which is treated as "unset" by the audit comparator.
 func generalSettingsSnapshot(name string, settings models.JSONB) map[string]any {
+	hasSecret := false
+	if settings != nil {
+		if v, ok := settings["meta_app_secret_encrypted"].(string); ok && v != "" {
+			hasSecret = true
+		}
+	}
 	return map[string]any{
-		"name":               name,
-		"timezone":           settings["timezone"],
-		"date_format":        settings["date_format"],
-		"mask_phone_numbers": settings["mask_phone_numbers"],
+		"name":                name,
+		"timezone":            settings["timezone"],
+		"date_format":         settings["date_format"],
+		"mask_phone_numbers":  settings["mask_phone_numbers"],
+		"meta_app_id":         settings["meta_app_id"],
+		"meta_config_id":      settings["meta_config_id"],
+		"has_meta_app_secret": hasSecret,
 	}
 }
 
@@ -47,6 +57,9 @@ type OrganizationSettings struct {
 	TransferTimeoutSecs int    `json:"transfer_timeout_secs"`
 	HoldMusicFile       string `json:"hold_music_file"`
 	RingbackFile        string `json:"ringback_file"`
+	MetaAppID           string `json:"meta_app_id"`
+	MetaConfigID        string `json:"meta_config_id"`
+	HasMetaAppSecret    bool   `json:"has_meta_app_secret"`
 }
 
 // GetOrganizationSettings returns the organization settings
@@ -98,6 +111,15 @@ func (a *App) GetOrganizationSettings(r *fastglue.Request) error {
 		if v, ok := org.Settings["ringback_file"].(string); ok && v != "" {
 			settings.RingbackFile = v
 		}
+		if v, ok := org.Settings["meta_app_id"].(string); ok && v != "" {
+			settings.MetaAppID = v
+		}
+		if v, ok := org.Settings["meta_config_id"].(string); ok && v != "" {
+			settings.MetaConfigID = v
+		}
+		if v, ok := org.Settings["meta_app_secret_encrypted"].(string); ok && v != "" {
+			settings.HasMetaAppSecret = true
+		}
 	}
 
 	return r.SendEnvelope(map[string]any{
@@ -123,6 +145,9 @@ func (a *App) UpdateOrganizationSettings(r *fastglue.Request) error {
 		TransferTimeoutSecs *int    `json:"transfer_timeout_secs"`
 		HoldMusicFile       *string `json:"hold_music_file"`
 		RingbackFile        *string `json:"ringback_file"`
+		MetaAppID           *string `json:"meta_app_id"`
+		MetaConfigID        *string `json:"meta_config_id"`
+		MetaAppSecret       *string `json:"meta_app_secret"`
 	}
 
 	if err := json.Unmarshal(r.RequestCtx.PostBody(), &req); err != nil {
@@ -134,12 +159,20 @@ func (a *App) UpdateOrganizationSettings(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Organization not found", nil, "")
 	}
 
+	// Gating Meta App credentials update on accounts:write permission
+	metaAppCredsTouched := req.MetaAppID != nil || req.MetaConfigID != nil || req.MetaAppSecret != nil
+	if metaAppCredsTouched {
+		if err := a.requirePermission(r, userID, models.ResourceAccounts, models.ActionWrite); err != nil {
+			return nil
+		}
+	}
+
 	// Snapshot before mutation so we can compute per-tab diffs.
 	oldGeneral := generalSettingsSnapshot(org.Name, org.Settings)
 	oldCalling := callingSettingsSnapshot(org.Settings)
 
 	// Track which tabs received updates so we only audit the relevant ones.
-	generalTouched := req.MaskPhoneNumbers != nil || req.Timezone != nil || req.DateFormat != nil || (req.Name != nil && *req.Name != "")
+	generalTouched := req.MaskPhoneNumbers != nil || req.Timezone != nil || req.DateFormat != nil || (req.Name != nil && *req.Name != "") || metaAppCredsTouched
 	callingTouched := req.CallingEnabled != nil || req.MaxCallDuration != nil || req.TransferTimeoutSecs != nil || req.HoldMusicFile != nil || req.RingbackFile != nil
 
 	// Update settings
@@ -170,6 +203,20 @@ func (a *App) UpdateOrganizationSettings(r *fastglue.Request) error {
 	}
 	if req.RingbackFile != nil {
 		org.Settings["ringback_file"] = *req.RingbackFile
+	}
+	if req.MetaAppID != nil {
+		org.Settings["meta_app_id"] = *req.MetaAppID
+	}
+	if req.MetaConfigID != nil {
+		org.Settings["meta_config_id"] = *req.MetaConfigID
+	}
+	if req.MetaAppSecret != nil && *req.MetaAppSecret != "" {
+		encSecret, errEnc := crypto.Encrypt(*req.MetaAppSecret, a.Config.App.EncryptionKey)
+		if errEnc != nil {
+			a.Log.Error("Failed to encrypt meta app secret", "error", errEnc)
+			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update settings", nil, "")
+		}
+		org.Settings["meta_app_secret_encrypted"] = encSecret
 	}
 	if req.Name != nil && *req.Name != "" {
 		org.Name = *req.Name
@@ -349,12 +396,8 @@ type CreateOrganizationRequest struct {
 
 // CreateOrganization creates a new organization
 func (a *App) CreateOrganization(r *fastglue.Request) error {
-	_, userID, err := a.getOrgAndUserID(r)
+	_, userID, err := a.requireAuth(r, models.ResourceOrganizations, models.ActionWrite)
 	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
-	}
-
-	if err := a.requirePermission(r, userID, models.ResourceOrganizations, models.ActionWrite); err != nil {
 		return nil
 	}
 
@@ -439,6 +482,9 @@ func (a *App) CreateOrganization(r *fastglue.Request) error {
 
 	a.Log.Info("Created organization", "org_id", org.ID, "org_name", org.Name, "created_by", userID)
 
+	a.logAudit(org.ID, userID, "organization", org.ID, models.AuditActionCreated, nil,
+		map[string]any{"name": org.Name, "slug": org.Slug})
+
 	return r.SendEnvelope(OrganizationResponse{
 		ID:        org.ID,
 		Name:      org.Name,
@@ -463,12 +509,8 @@ type MemberResponse struct {
 
 // ListOrganizationMembers returns all members of the current organization
 func (a *App) ListOrganizationMembers(r *fastglue.Request) error {
-	orgID, userID, err := a.getOrgAndUserID(r)
+	orgID, _, err := a.requireAuth(r, models.ResourceOrganizations, models.ActionRead)
 	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
-	}
-
-	if err := a.requirePermission(r, userID, models.ResourceOrganizations, models.ActionRead); err != nil {
 		return nil
 	}
 
@@ -499,12 +541,7 @@ func (a *App) ListOrganizationMembers(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to list members", nil, "")
 	}
 
-	return r.SendEnvelope(map[string]any{
-		"members": response,
-		"total":   total,
-		"page":    pg.Page,
-		"limit":   pg.Limit,
-	})
+	return r.SendEnvelope(listEnvelope("members", response, total, pg))
 }
 
 // AddMemberRequest represents the request body for adding a member to an organization
@@ -516,12 +553,8 @@ type AddMemberRequest struct {
 
 // AddOrganizationMember adds an existing user to the current organization
 func (a *App) AddOrganizationMember(r *fastglue.Request) error {
-	orgID, userID, err := a.getOrgAndUserID(r)
+	orgID, actorID, err := a.requireAuth(r, models.ResourceOrganizations, models.ActionAssign)
 	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
-	}
-
-	if err := a.requirePermission(r, userID, models.ResourceOrganizations, models.ActionAssign); err != nil {
 		return nil
 	}
 
@@ -544,55 +577,74 @@ func (a *App) AddOrganizationMember(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "user_id or email is required", nil, "")
 	}
 
-	// Check if already a member
-	var existingCount int64
-	a.DB.Model(&models.UserOrganization{}).
+	// Look up the membership including soft-deleted rows: idx_user_org carries no
+	// deleted_at predicate, so a previously removed member's row blocks Create and
+	// has to be revived instead.
+	var existing models.UserOrganization
+	revive := false
+	if err := a.DB.Unscoped().
 		Where("user_id = ? AND organization_id = ?", targetUser.ID, orgID).
-		Count(&existingCount)
-	if existingCount > 0 {
-		return r.SendErrorEnvelope(fasthttp.StatusConflict, "User is already a member of this organization", nil, "")
+		First(&existing).Error; err == nil {
+		if !existing.DeletedAt.Valid {
+			return r.SendErrorEnvelope(fasthttp.StatusConflict, "User is already a member of this organization", nil, "")
+		}
+		revive = true
 	}
 
-	// Determine role
-	var roleID *uuid.UUID
+	// Determine role. A membership row with a NULL role must never be created:
+	// the org-scoped permission lookup finds no role for it, so the member would
+	// land in the org with no permissions at all — fail loudly instead.
+	var roleID uuid.UUID
 	if req.RoleID != nil {
 		// Validate role exists and belongs to org
 		var role models.CustomRole
 		if err := a.DB.Where("id = ? AND organization_id = ?", req.RoleID, orgID).First(&role).Error; err != nil {
 			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid role", nil, "")
 		}
-		roleID = req.RoleID
+		roleID = role.ID
 	} else {
 		// Use org's default role
 		var defaultRole models.CustomRole
-		if err := a.DB.Where("organization_id = ? AND is_default = ?", orgID, true).First(&defaultRole).Error; err == nil {
-			roleID = &defaultRole.ID
+		if err := a.DB.Where("organization_id = ? AND is_default = ?", orgID, true).First(&defaultRole).Error; err != nil {
+			return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "role_id is required: this organization has no default role", nil, "")
+		}
+		roleID = defaultRole.ID
+	}
+
+	if revive {
+		if err := a.DB.Unscoped().Model(&existing).Updates(map[string]any{
+			"deleted_at": nil,
+			"role_id":    roleID,
+		}).Error; err != nil {
+			a.Log.Error("Failed to restore organization member", "error", err)
+			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to add member", nil, "")
+		}
+	} else {
+		userOrg := models.UserOrganization{
+			UserID:         targetUser.ID,
+			OrganizationID: orgID,
+			RoleID:         &roleID,
+			IsDefault:      false,
+		}
+		if err := a.DB.Create(&userOrg).Error; err != nil {
+			a.Log.Error("Failed to add organization member", "error", err)
+			return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to add member", nil, "")
 		}
 	}
 
-	userOrg := models.UserOrganization{
-		UserID:         targetUser.ID,
-		OrganizationID: orgID,
-		RoleID:         roleID,
-		IsDefault:      false,
-	}
+	// The member may have had a cached (empty or stale) permission set for this org.
+	a.InvalidateUserPermissionsCache(targetUser.ID)
 
-	if err := a.DB.Create(&userOrg).Error; err != nil {
-		a.Log.Error("Failed to add organization member", "error", err)
-		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to add member", nil, "")
-	}
+	a.logAudit(orgID, actorID, "organization_member", targetUser.ID, models.AuditActionCreated, nil,
+		map[string]any{"user_id": targetUser.ID, "email": targetUser.Email, "role_id": roleID})
 
 	return r.SendEnvelope(map[string]string{"message": "Member added successfully"})
 }
 
 // RemoveOrganizationMember removes a user from the current organization
 func (a *App) RemoveOrganizationMember(r *fastglue.Request) error {
-	orgID, userID, err := a.getOrgAndUserID(r)
+	orgID, userID, err := a.requireAuth(r, models.ResourceOrganizations, models.ActionAssign)
 	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
-	}
-
-	if err := a.requirePermission(r, userID, models.ResourceOrganizations, models.ActionAssign); err != nil {
 		return nil
 	}
 
@@ -619,6 +671,9 @@ func (a *App) RemoveOrganizationMember(r *fastglue.Request) error {
 	// Invalidate removed user's permission cache
 	a.InvalidateUserPermissionsCache(targetUserID)
 
+	a.logAudit(orgID, userID, "organization_member", targetUserID, models.AuditActionDeleted,
+		map[string]any{"user_id": targetUserID}, nil)
+
 	return r.SendEnvelope(map[string]string{"message": "Member removed successfully"})
 }
 
@@ -629,12 +684,8 @@ type UpdateMemberRoleRequest struct {
 
 // UpdateOrganizationMemberRole updates a member's role in the current organization
 func (a *App) UpdateOrganizationMemberRole(r *fastglue.Request) error {
-	orgID, userID, err := a.getOrgAndUserID(r)
+	orgID, actorID, err := a.requireAuth(r, models.ResourceOrganizations, models.ActionAssign)
 	if err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
-	}
-
-	if err := a.requirePermission(r, userID, models.ResourceOrganizations, models.ActionAssign); err != nil {
 		return nil
 	}
 
@@ -658,6 +709,12 @@ func (a *App) UpdateOrganizationMemberRole(r *fastglue.Request) error {
 		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid role", nil, "")
 	}
 
+	var previousRoleID *uuid.UUID
+	var currentMembership models.UserOrganization
+	if err := a.DB.Where("user_id = ? AND organization_id = ?", targetUserID, orgID).First(&currentMembership).Error; err == nil {
+		previousRoleID = currentMembership.RoleID
+	}
+
 	// Update the user's role in this org
 	result := a.DB.Model(&models.UserOrganization{}).
 		Where("user_id = ? AND organization_id = ?", targetUserID, orgID).
@@ -672,6 +729,9 @@ func (a *App) UpdateOrganizationMemberRole(r *fastglue.Request) error {
 
 	// Invalidate permission cache
 	a.InvalidateUserPermissionsCache(targetUserID)
+
+	a.logAudit(orgID, actorID, "organization_member", targetUserID, models.AuditActionUpdated,
+		map[string]any{"role_id": previousRoleID}, map[string]any{"role_id": req.RoleID})
 
 	return r.SendEnvelope(map[string]string{"message": "Member role updated successfully"})
 }

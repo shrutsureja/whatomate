@@ -2,13 +2,26 @@ package whatsapp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/shridarpatil/whatomate/internal/templateutil"
 )
+
+// truncateLabel caps a customer-visible button label at max characters.
+// Meta counts characters, not bytes, and the locales this app ships (hi/ta/ar)
+// are multi-byte — slicing on a byte boundary splits a rune and the label
+// arrives garbled instead of merely shortened.
+func truncateLabel(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
+}
 
 // SendTextMessage sends a text message to a recipient with optional reply context
 func (c *Client) SendTextMessage(ctx context.Context, account *Account, rcpt Recipient, text string, replyToMsgID ...string) (string, error) {
@@ -39,16 +52,10 @@ func (c *Client) SendTextMessage(ctx context.Context, account *Account, rcpt Rec
 		return "", fmt.Errorf("failed to send text message: %w", err)
 	}
 
-	var resp MetaAPIResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
+	messageID, err := parseMessageID(respBody)
+	if err != nil {
+		return "", err
 	}
-
-	if len(resp.Messages) == 0 {
-		return "", fmt.Errorf("no message ID in response")
-	}
-
-	messageID := resp.Messages[0].ID
 	c.Log.Info("Text message sent", "message_id", messageID, "phone", rcpt.Phone)
 	return messageID, nil
 }
@@ -69,10 +76,7 @@ func (c *Client) SendInteractiveButtons(ctx context.Context, account *Account, r
 		// Use button format
 		buttonsList := make([]map[string]any, 0, len(buttons))
 		for _, btn := range buttons {
-			title := btn.Title
-			if len(title) > 20 {
-				title = title[:20]
-			}
+			title := truncateLabel(btn.Title, 20)
 			buttonsList = append(buttonsList, map[string]any{
 				"type": "reply",
 				"reply": map[string]any{
@@ -95,10 +99,7 @@ func (c *Client) SendInteractiveButtons(ctx context.Context, account *Account, r
 		// Use list format for 4-10 items
 		rows := make([]map[string]any, 0, len(buttons))
 		for _, btn := range buttons {
-			title := btn.Title
-			if len(title) > 24 {
-				title = title[:24]
-			}
+			title := truncateLabel(btn.Title, 24)
 			rows = append(rows, map[string]any{
 				"id":    btn.ID,
 				"title": title,
@@ -139,16 +140,10 @@ func (c *Client) SendInteractiveButtons(ctx context.Context, account *Account, r
 		return "", fmt.Errorf("failed to send interactive message: %w", err)
 	}
 
-	var resp MetaAPIResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
+	messageID, err := parseMessageID(respBody)
+	if err != nil {
+		return "", err
 	}
-
-	if len(resp.Messages) == 0 {
-		return "", fmt.Errorf("no message ID in response")
-	}
-
-	messageID := resp.Messages[0].ID
 	c.Log.Info("Interactive message sent", "message_id", messageID, "phone", rcpt.Phone)
 	return messageID, nil
 }
@@ -161,9 +156,7 @@ func (c *Client) SendCTAURLButton(ctx context.Context, account *Account, rcpt Re
 	}
 
 	// Truncate button text to 20 chars (WhatsApp limit)
-	if len(buttonText) > 20 {
-		buttonText = buttonText[:20]
-	}
+	buttonText = truncateLabel(buttonText, 20)
 
 	interactive := map[string]any{
 		"type": "cta_url",
@@ -196,17 +189,83 @@ func (c *Client) SendCTAURLButton(ctx context.Context, account *Account, rcpt Re
 		return "", fmt.Errorf("failed to send CTA URL button message: %w", err)
 	}
 
-	var resp MetaAPIResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
+	messageID, err := parseMessageID(respBody)
+	if err != nil {
+		return "", err
 	}
-
-	if len(resp.Messages) == 0 {
-		return "", fmt.Errorf("no message ID in response")
-	}
-
-	messageID := resp.Messages[0].ID
 	c.Log.Info("CTA URL button message sent", "message_id", messageID, "phone", rcpt.Phone)
+	return messageID, nil
+}
+
+// SendVoiceCallButton sends an interactive message with a WhatsApp Business
+// Calling voice_call button. When the recipient taps the button, Meta
+// initiates a voice call back to our number; the resulting incoming-call
+// webhook echoes the `payload` string back as `biz_opaque_callback_data`, so
+// callers can use it for routing (e.g. sticky-assigning the call to the
+// agent who sent the button).
+//
+// ttlMinutes is how long the button remains clickable; pass 0 to use Meta's
+// default (15 min). The sending phone number must be enrolled in the
+// WhatsApp Business Calling API or Meta rejects the send.
+func (c *Client) SendVoiceCallButton(ctx context.Context, account *Account, rcpt Recipient, bodyText, displayText string, ttlMinutes int, payload string) (string, error) {
+	if bodyText == "" {
+		return "", fmt.Errorf("body text is required")
+	}
+	if displayText == "" {
+		return "", fmt.Errorf("display text is required")
+	}
+	displayText = truncateLabel(displayText, 20)
+
+	parameters := map[string]any{
+		"display_text": displayText,
+	}
+	if ttlMinutes > 0 {
+		parameters["ttl_minutes"] = ttlMinutes
+	}
+	if payload != "" {
+		parameters["payload"] = payload
+	}
+
+	interactive := map[string]any{
+		"type": "voice_call",
+		"body": map[string]any{
+			"text": bodyText,
+		},
+		"action": map[string]any{
+			"name":       "voice_call",
+			"parameters": parameters,
+		},
+	}
+
+	msg := map[string]any{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"type":              "interactive",
+		"interactive":       interactive,
+	}
+	rcpt.SetOnPayload(msg)
+
+	url := c.buildMessagesURL(account)
+	// Logged at info during the sticky-routing rollout: confirms display_text,
+	// ttl_minutes, and the agent-id payload actually leave our box, so when
+	// the incoming-call webhook arrives we know whether Meta echoed it back.
+	// The payload is an opaque "agent:<uuid>" — not PII.
+	c.Log.Info("Sending voice_call button message",
+		"phone", rcpt.Phone,
+		"parameters", parameters,
+	)
+
+	respBody, err := c.doRequest(ctx, "POST", url, msg, account.AccessToken)
+	if err != nil {
+		c.Log.Error("Failed to send voice_call button message", "error", err, "phone", rcpt.Phone)
+		return "", fmt.Errorf("failed to send voice_call button message: %w", err)
+	}
+
+	messageID, err := parseMessageID(respBody)
+	if err != nil {
+		return "", err
+	}
+	c.Log.Info("voice_call button message sent", "message_id", messageID, "phone", rcpt.Phone)
 	return messageID, nil
 }
 
@@ -227,6 +286,35 @@ type TemplateParam struct {
 }
 
 // SendTemplateMessage sends a template message
+// sortParamKeys returns the keys of paramMap in the order they should be sent
+// to Meta. Named templates (forceLexical=true, or any non-numeric key) sort
+// lexicographically. Otherwise keys are treated as positional indices and
+// sorted numerically — required so that "1","2",..,"10","11" stay in order
+// instead of becoming "1","10","11",..,"2","9".
+func sortParamKeys(paramMap map[string]string, forceLexical bool) []string {
+	keys := make([]string, 0, len(paramMap))
+	for k := range paramMap {
+		keys = append(keys, k)
+	}
+	if forceLexical {
+		sort.Strings(keys)
+		return keys
+	}
+	for _, k := range keys {
+		if _, err := strconv.Atoi(k); err != nil {
+			// Mixed/named keys — fall back to lexical to keep behaviour stable.
+			sort.Strings(keys)
+			return keys
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		ni, _ := strconv.Atoi(keys[i])
+		nj, _ := strconv.Atoi(keys[j])
+		return ni < nj
+	})
+	return keys
+}
+
 // BodyParamsToComponents converts a bodyParams map into WhatsApp template components.
 // Supports both positional (numeric keys) and named parameters.
 func BodyParamsToComponents(bodyParams map[string]string) []map[string]any {
@@ -243,12 +331,12 @@ func BodyParamsToComponents(bodyParams map[string]string) []map[string]any {
 		}
 	}
 
-	// Get sorted keys for deterministic ordering
-	keys := make([]string, 0, len(bodyParams))
-	for k := range bodyParams {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	// Get sorted keys for deterministic ordering. For positional templates the
+	// keys are numeric strings ("1".."14") and MUST be ordered numerically —
+	// sort.Strings would yield "1","10","11",..,"2",..,"9" and ship parameters
+	// to Meta in the wrong slot, so {{2}}..{{9}} render as the values that
+	// belonged in {{10}}+ on the recipient's device (issue #354).
+	keys := sortParamKeys(bodyParams, isNamedParams)
 
 	params := make([]map[string]any, 0, len(bodyParams))
 	for _, key := range keys {
@@ -270,24 +358,95 @@ func BodyParamsToComponents(bodyParams map[string]string) []map[string]any {
 	}
 }
 
+// HeaderTextParamsComponent builds the header component for a TEXT header that
+// contains one variable. Meta restricts TEXT headers to at most one variable,
+// so this returns an error if `headerContent` has more.
+//
+// `params` is the caller's value map (e.g. {"order_id": "ORD-1"} or {"1": "ORD-1"}).
+// `fallback` is consulted if the value isn't found in `params` — useful for
+// callers that share one flat map across header + body.
+//
+// Returns (nil, nil) when the header has no variable.
+func HeaderTextParamsComponent(headerContent string, params, fallback map[string]string) (map[string]any, error) {
+	if !strings.Contains(headerContent, "{{") {
+		return nil, nil
+	}
+	names := templateutil.ExtParamNames(headerContent)
+	if len(names) == 0 {
+		return nil, nil
+	}
+	if len(names) > 1 {
+		return nil, fmt.Errorf("header text may contain at most one variable; found %d", len(names))
+	}
+
+	name := names[0]
+	value := params[name]
+	if value == "" {
+		value = fallback[name]
+	}
+
+	param := map[string]any{
+		"type": "text",
+		"text": value,
+	}
+	// Named params include parameter_name; positional ("1") don't.
+	if _, err := strconv.Atoi(name); err != nil {
+		param["parameter_name"] = name
+	}
+
+	return map[string]any{
+		"type":       "header",
+		"parameters": []map[string]any{param},
+	}, nil
+}
+
 // BuildTemplateComponents builds the full WhatsApp template components array,
-// including an optional header component (for IMAGE/VIDEO/DOCUMENT) and body parameters.
-func BuildTemplateComponents(bodyParams map[string]string, headerType string, headerMediaID string) []map[string]any {
+// including an optional header component (TEXT with variable, or IMAGE/VIDEO/
+// DOCUMENT media) and body parameters.
+//
+// headerMediaFilename is required by Meta for DOCUMENT headers — without it, the
+// API returns error 132012 "Header Format Mismatch (Expected DOCUMENT, received
+// UNKNOWN)". It is ignored for IMAGE/VIDEO.
+//
+// headerContent and headerParams are only consulted for TEXT headers. For media
+// headers (IMAGE/VIDEO/DOCUMENT) the existing headerMediaID/Filename path is used.
+// Returns an error if the TEXT header declares more than one variable.
+func BuildTemplateComponents(
+	bodyParams map[string]string,
+	headerType, headerContent string,
+	headerParams map[string]string,
+	headerMediaID, headerMediaFilename string,
+) ([]map[string]any, error) {
 	var components []map[string]any
 
-	// Add header component if media is provided
-	if headerMediaID != "" {
-		mediaType := strings.ToLower(headerType) // "image", "video", "document"
-		headerParam := map[string]any{
-			"type": mediaType,
-			mediaType: map[string]any{
-				"id": headerMediaID,
-			},
+	switch strings.ToUpper(headerType) {
+	case "TEXT":
+		// Build a text-header parameter component when the approved template
+		// declares a {{var}} in the header text. Without this, Meta rejects
+		// sends of templates with header variables.
+		headerComp, err := HeaderTextParamsComponent(headerContent, headerParams, bodyParams)
+		if err != nil {
+			return nil, err
 		}
-		components = append(components, map[string]any{
-			"type":       "header",
-			"parameters": []map[string]any{headerParam},
-		})
+		if headerComp != nil {
+			components = append(components, headerComp)
+		}
+	case "IMAGE", "VIDEO", "DOCUMENT":
+		if headerMediaID != "" {
+			mediaType := strings.ToLower(headerType)
+			mediaObj := map[string]any{"id": headerMediaID}
+			if mediaType == "document" && headerMediaFilename != "" {
+				mediaObj["filename"] = headerMediaFilename
+			}
+			headerParam := map[string]any{
+				"type":    mediaType,
+				mediaType: mediaObj,
+			}
+			components = append(components, map[string]any{
+				"type":       "header",
+				"parameters": []map[string]any{headerParam},
+			})
+		}
 	}
 
 	// Add body component with text parameters
@@ -295,9 +454,9 @@ func BuildTemplateComponents(bodyParams map[string]string, headerType string, he
 	components = append(components, bodyComponents...)
 
 	if len(components) == 0 {
-		return nil
+		return nil, nil
 	}
-	return components
+	return components, nil
 }
 
 // AutoButtonComponents generates button components for button types that require
@@ -372,11 +531,9 @@ func ButtonURLParamsToComponents(buttonParams map[string]string, templateButtons
 		}
 	}
 
-	keys := make([]string, 0, len(buttonParams))
-	for k := range buttonParams {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	// Button indices are always numeric strings ("0", "1", ...) so sort
+	// numerically — same lexical-sort hazard as positional body params.
+	keys := sortParamKeys(buttonParams, false)
 
 	components := make([]map[string]any, 0, len(buttonParams))
 	for _, index := range keys {
@@ -431,9 +588,7 @@ func (c *Client) SendFlowMessage(ctx context.Context, account *Account, rcpt Rec
 	}
 
 	// Truncate CTA text to 20 chars (WhatsApp limit)
-	if len(ctaText) > 20 {
-		ctaText = ctaText[:20]
-	}
+	ctaText = truncateLabel(ctaText, 20)
 
 	interactive := map[string]any{
 		"type": "flow",
@@ -480,16 +635,10 @@ func (c *Client) SendFlowMessage(ctx context.Context, account *Account, rcpt Rec
 		return "", fmt.Errorf("failed to send flow message: %w", err)
 	}
 
-	var resp MetaAPIResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
+	messageID, err := parseMessageID(respBody)
+	if err != nil {
+		return "", err
 	}
-
-	if len(resp.Messages) == 0 {
-		return "", fmt.Errorf("no message ID in response")
-	}
-
-	messageID := resp.Messages[0].ID
 	c.Log.Info("Flow message sent", "message_id", messageID, "phone", rcpt.Phone, "flow_id", flowID)
 	return messageID, nil
 }
@@ -523,16 +672,10 @@ func (c *Client) SendTemplateMessage(ctx context.Context, account *Account, rcpt
 		return "", fmt.Errorf("failed to send template message: %w", err)
 	}
 
-	var resp MetaAPIResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return "", fmt.Errorf("failed to parse response: %w", err)
+	messageID, err := parseMessageID(respBody)
+	if err != nil {
+		return "", err
 	}
-
-	if len(resp.Messages) == 0 {
-		return "", fmt.Errorf("no message ID in response")
-	}
-
-	messageID := resp.Messages[0].ID
 	c.Log.Info("Template message sent", "message_id", messageID, "phone", rcpt.Phone, "template", templateName)
 	return messageID, nil
 }

@@ -46,17 +46,11 @@ const router = createRouter({
           meta: { permission: 'analytics' }
         },
         {
-          path: 'chat',
-          name: 'chat',
-          component: () => import('@/views/chat/ChatView.vue'),
-          meta: { permission: 'chat' }
-        },
-        {
-          path: 'chat/:contactId',
+          path: 'chat/:contactId?',
           name: 'chat-conversation',
           component: () => import('@/views/chat/ChatView.vue'),
           props: true,
-          meta: { permission: 'chat' }
+          meta: { permission: 'chat', stableKey: true }
         },
         {
           path: 'profile',
@@ -193,6 +187,15 @@ const router = createRouter({
           name: 'canned-responses',
           component: () => import('@/views/settings/CannedResponsesView.vue'),
           meta: { permission: 'canned_responses' }
+        },
+        {
+          path: 'settings/canned-responses/:id',
+          name: 'canned-response-detail',
+          component: () => import('@/views/settings/CannedResponseDetailView.vue'),
+          // stableKey reuses the component instance when :id flips from "new"
+          // to the new UUID after create, so the locally-set response (and the
+          // resulting Save-button reactivity) survives the route change.
+          meta: { permission: 'canned_responses', stableKey: true }
         },
         {
           path: 'settings/contacts',
@@ -397,14 +400,15 @@ function getFirstAccessibleRoute(authStore: ReturnType<typeof useAuthStore>): st
 router.beforeEach(async (to, _from, next) => {
   const authStore = useAuthStore()
 
+  // Hydrate the store from localStorage before any route decision — an authenticated user hitting /login must be redirected away.
+  if (!authStore.isAuthenticated && (to.meta.requiresAuth !== false || to.name === 'login' || to.name === 'register')) {
+    authStore.restoreSession()
+  }
+
   // Check if route requires auth
   if (to.meta.requiresAuth !== false) {
     if (!authStore.isAuthenticated) {
-      // Try to restore session from localStorage
-      const restored = authStore.restoreSession()
-      if (!restored) {
-        return next({ name: 'login', query: { redirect: to.fullPath } })
-      }
+      return next({ name: 'login', query: { redirect: to.fullPath } })
     }
 
     // Check permission-based access

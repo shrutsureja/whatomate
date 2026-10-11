@@ -640,11 +640,9 @@ func TestApp_CreateChatbotFlow(t *testing.T) {
 		require.NoError(t, err)
 
 		var flow models.ChatbotFlow
-		require.NoError(t, app.DB.Preload("Steps").First(&flow, "id = ?", parsedID).Error)
+		require.NoError(t, app.DB.First(&flow, "id = ?", parsedID).Error)
 		assert.Equal(t, "Onboarding Flow", flow.Name)
 		assert.True(t, flow.IsEnabled)
-		assert.Len(t, flow.Steps, 2)
-		assert.Equal(t, "ask_name", flow.Steps[0].StepName)
 	})
 }
 
@@ -1032,11 +1030,11 @@ func TestApp_GetChatbotSettings_ExistingSettings(t *testing.T) {
 
 		// Create settings directly in the DB
 		settings := &models.ChatbotSettings{
-			BaseModel:      models.BaseModel{ID: uuid.New()},
-			OrganizationID: org.ID,
-			IsEnabled:      true,
-			DefaultResponse: "Custom greeting!",
-			FallbackMessage: "I do not understand.",
+			BaseModel:          models.BaseModel{ID: uuid.New()},
+			OrganizationID:     org.ID,
+			IsEnabled:          true,
+			DefaultResponse:    "Custom greeting!",
+			FallbackMessage:    "I do not understand.",
 			SessionTimeoutMins: 45,
 			AI: models.AIConfig{
 				Enabled:  true,
@@ -1265,13 +1263,13 @@ func TestApp_UpdateChatbotSettings_PartialUpdate(t *testing.T) {
 		user := testutil.CreateTestUser(t, app.DB, org.ID)
 
 		req := testutil.NewJSONRequest(t, map[string]any{
-			"sla_enabled":           true,
-			"sla_response_minutes":  5,
+			"sla_enabled":            true,
+			"sla_response_minutes":   5,
 			"sla_resolution_minutes": 120,
 			"sla_escalation_minutes": 45,
-			"sla_auto_close_hours":  48,
+			"sla_auto_close_hours":   48,
 			"sla_auto_close_message": "Conversation auto-closed.",
-			"sla_warning_message":   "SLA warning: response time exceeded.",
+			"sla_warning_message":    "SLA warning: response time exceeded.",
 		})
 		testutil.SetAuthContext(req, org.ID, user.ID)
 
@@ -1707,9 +1705,8 @@ func TestApp_CreateChatbotFlow_Additional(t *testing.T) {
 		require.NoError(t, err)
 
 		var flow models.ChatbotFlow
-		require.NoError(t, app.DB.Preload("Steps").First(&flow, "id = ?", parsedID).Error)
+		require.NoError(t, app.DB.First(&flow, "id = ?", parsedID).Error)
 		assert.Equal(t, "No Steps Flow", flow.Name)
-		assert.Len(t, flow.Steps, 0)
 	})
 
 	t.Run("create flow with completion config", func(t *testing.T) {
@@ -1860,22 +1857,9 @@ func TestApp_UpdateChatbotFlow_Additional(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(updateReq))
 
-		// Verify old step is gone and new steps exist
-		parsedID, err := uuid.Parse(createResp.Data.ID)
-		require.NoError(t, err)
-
-		var flow models.ChatbotFlow
-		require.NoError(t, app.DB.Preload("Steps").First(&flow, "id = ?", parsedID).Error)
-		assert.Len(t, flow.Steps, 2)
-
-		// Steps should be ordered
-		stepNames := make([]string, len(flow.Steps))
-		for i, s := range flow.Steps {
-			stepNames[i] = s.StepName
-		}
-		assert.Contains(t, stepNames, "new_step_1")
-		assert.Contains(t, stepNames, "new_step_2")
-		assert.NotContains(t, stepNames, "old_step")
+		// Flow no longer persists Steps[] — v2 graph is the only wire
+		// format. We just verify the update call succeeded above.
+		_ = createResp
 	})
 
 	t.Run("update trigger keywords", func(t *testing.T) {
@@ -2310,14 +2294,14 @@ func createSessionForChatbotTest(t *testing.T, app *handlers.App, orgID, contact
 
 	now := time.Now()
 	session := &models.ChatbotSession{
-		BaseModel:       models.BaseModel{ID: uuid.New()},
-		OrganizationID:  orgID,
-		ContactID:       contactID,
-		PhoneNumber:     phone,
-		Status:          status,
-		SessionData:     models.JSONB{},
-		StartedAt:       now,
-		LastActivityAt:  now,
+		BaseModel:      models.BaseModel{ID: uuid.New()},
+		OrganizationID: orgID,
+		ContactID:      contactID,
+		PhoneNumber:    phone,
+		Status:         status,
+		SessionData:    models.JSONB{},
+		StartedAt:      now,
+		LastActivityAt: now,
 	}
 	require.NoError(t, app.DB.Create(session).Error)
 	return session
@@ -2830,4 +2814,97 @@ func TestApp_GetKeywordRule_ResponseFields(t *testing.T) {
 		assert.False(t, resp.Data.Enabled)
 		assert.NotEmpty(t, resp.Data.CreatedAt)
 	})
+}
+
+// Greeting and fallback buttons are sent as free-form interactive messages.
+// A combination Meta rejects produces no message at all — only a log line —
+// so the save has to fail loudly instead.
+func TestApp_UpdateChatbotSettings_RejectsUnsendableButtons(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		field   string
+		buttons []map[string]any
+		wantMsg string
+	}{
+		{
+			name:    "greeting url button without a scheme",
+			field:   "greeting_buttons",
+			buttons: []map[string]any{{"id": "btn_1", "title": "Docs", "type": "url", "url": "example.com"}},
+			wantMsg: "greeting_buttons: button \"Docs\" needs an absolute http(s) URL",
+		},
+		{
+			name:  "greeting with two url buttons",
+			field: "greeting_buttons",
+			buttons: []map[string]any{
+				{"id": "btn_1", "title": "Docs", "type": "url", "url": "https://example.com"},
+				{"id": "btn_2", "title": "Blog", "type": "url", "url": "https://example.org"},
+			},
+			wantMsg: "greeting_buttons: only one URL button is allowed per message",
+		},
+		{
+			name:  "greeting with duplicate button ids",
+			field: "greeting_buttons",
+			buttons: []map[string]any{
+				{"id": "btn_2", "title": "Yes", "type": "reply"},
+				{"id": "btn_2", "title": "No", "type": "reply"},
+			},
+			wantMsg: "greeting_buttons: button ids must be unique, \"btn_2\" is used more than once",
+		},
+		{
+			name:    "fallback button title over the character cap",
+			field:   "fallback_buttons",
+			buttons: []map[string]any{{"id": "btn_1", "title": "This label is far too long for WhatsApp", "type": "reply"}},
+			wantMsg: `fallback_buttons: button title "This label is far too long for WhatsApp" exceeds 20 characters`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := newTestApp(t)
+			org := testutil.CreateTestOrganization(t, app.DB)
+			user := testutil.CreateTestUser(t, app.DB, org.ID)
+
+			req := testutil.NewJSONRequest(t, map[string]any{tt.field: tt.buttons})
+			testutil.SetAuthContext(req, org.ID, user.ID)
+
+			err := app.UpdateChatbotSettings(req)
+			require.NoError(t, err)
+			assert.Equal(t, fasthttp.StatusBadRequest, testutil.GetResponseStatusCode(req))
+
+			var resp struct {
+				Status  string `json:"status"`
+				Message string `json:"message"`
+			}
+			require.NoError(t, json.Unmarshal(testutil.GetResponseBody(req), &resp))
+			assert.Equal(t, "error", resp.Status)
+			assert.Equal(t, tt.wantMsg, resp.Message)
+
+			// Nothing may be persisted when validation rejects the payload.
+			var count int64
+			require.NoError(t, app.DB.Model(&models.ChatbotSettings{}).
+				Where("organization_id = ?", org.ID).Count(&count).Error)
+			assert.Zero(t, count, "rejected settings must not be written")
+		})
+	}
+}
+
+func TestApp_UpdateChatbotSettings_AcceptsSingleURLButton(t *testing.T) {
+	t.Parallel()
+
+	app := newTestApp(t)
+	org := testutil.CreateTestOrganization(t, app.DB)
+	user := testutil.CreateTestUser(t, app.DB, org.ID)
+
+	req := testutil.NewJSONRequest(t, map[string]any{
+		"greeting_message": "Hi!",
+		"greeting_buttons": []map[string]any{
+			{"id": "btn_1", "title": "Visit docs", "type": "url", "url": "https://example.com/docs"},
+		},
+	})
+	testutil.SetAuthContext(req, org.ID, user.ID)
+
+	require.NoError(t, app.UpdateChatbotSettings(req))
+	assert.Equal(t, fasthttp.StatusOK, testutil.GetResponseStatusCode(req))
 }
